@@ -1,0 +1,17 @@
+*.pyc
+*.swp
+backup/
+results/
+software/
+dataset/
+__pycache__/
+baselines/
+temp*
+tmp_vis.png
+*.pt
+*.txt
+*.o*
+*.grid
+*.job
+*.csv
+data/
