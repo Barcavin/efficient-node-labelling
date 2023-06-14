@@ -1,3 +1,4 @@
+import sys
 import torch
 from collections import defaultdict
 
@@ -19,7 +20,7 @@ class Logger(object):
             argmax = result[:, 0].argmax().item()
         return argmax
 
-    def print_statistics(self, run=None, file=None):
+    def print_statistics(self, run=None, file=sys.stdout):
         if run is not None:
             result = 100 * torch.tensor(self.results[run])
             argmax = self.get_argmax(result)

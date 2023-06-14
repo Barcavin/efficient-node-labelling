@@ -15,9 +15,7 @@ from torch_geometric.transforms import (BaseTransform, Compose,
 from torch_geometric.utils import (add_self_loops, degree,
                                    from_scipy_sparse_matrix, index_to_mask,
                                    is_undirected, negative_sampling,
-                                   to_undirected, train_test_split_edges, coalesce)
-
-from software.MisraGries import edge_coloring                                   
+                                   to_undirected, train_test_split_edges, coalesce)                         
 
 
 def get_dataset(root, name: str):
@@ -60,11 +58,12 @@ def load_unsplitted_data(root,name):
 def set_random_seeds(random_seed=0):
     r"""Sets the seed for generating random numbers."""
     torch.manual_seed(random_seed)
-    torch.cuda.manual_seed(random_seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.cuda.manual_seed_all(random_seed)
+    # torch.backends.cudnn.deterministic = True
+    # torch.backends.cudnn.benchmark = False
     np.random.seed(random_seed)
     random.seed(random_seed)
+
 
 def do_edge_split(data, val_ratio=0.05, test_ratio=0.1, fe_ratio=0):
     if val_ratio==0:
@@ -97,77 +96,9 @@ def do_edge_split(data, val_ratio=0.05, test_ratio=0.1, fe_ratio=0):
     # print(f"train: {train.pos_edge_label_index.shape[1]}")
     # print(f"valid: {val.pos_edge_label_index.shape[1]}")
     # print(f"test: {test.pos_edge_label_index.shape[1]}")
-    fe_ratio=0 # TODO: fix fe_ratio==0
-    if fe_ratio==0:
-        split_edge["train"]["edge"] = train.pos_edge_label_index.t()
-        data = train
-    else:
-        fe_val_ratio = fe_test_ratio = fe_ratio / 2
-        split_fe = RandomLinkSplit(num_val=fe_val_ratio,
-                            num_test=fe_test_ratio,
-                            is_undirected=True,
-                            split_labels=True,
-                            add_negative_train_samples=False)
-        train_fe,val_fe,test_fe = split_fe(train)
-        train_pos_edge_label_index = torch.concat([test_fe.pos_edge_label_index, val_fe.pos_edge_label_index],axis=1)
-        # split_edge["train"]["edge"] = train_pos_edge_label_index.t()
-        split_edge["train"]["iid"] = train_pos_edge_label_index.t()
-        split_edge["train"]["edge"] = train_fe.pos_edge_label_index.t()
-        data = train_fe
-    data.full_edge_index = test.edge_index.clone()   
+    split_edge["train"]["edge"] = train.pos_edge_label_index.t()
+    data = train
     return data, split_edge
-
-def get_accumulation_steps(size, fe_ratio):
-    if fe_ratio > 0:
-        num_fe_edges = int(np.ceil(size * fe_ratio))
-        accumulation_steps = int(np.ceil(size / num_fe_edges))
-    else:
-        accumulation_steps = 1
-        num_fe_edges = None
-    return accumulation_steps, num_fe_edges
-
-def mask_fe_onfly(i, num_fe_edges, pos_train_edge, perm, edge_index, batch=None):
-    if num_fe_edges is None and batch is None:
-        edge = pos_train_edge[perm].t()
-        edge_index_out = edge_index
-    else:
-        # FakeEdge masking on the fly
-        if batch is not None:
-            fe_ind = perm[batch[i]:batch[i+1]]
-        else:
-            fe_ind = perm[i*num_fe_edges:(i+1)*num_fe_edges]
-        fe_mask = index_to_mask(fe_ind, pos_train_edge.size(0))
-        edge = pos_train_edge[fe_mask].t()
-
-        # the rest are edge_index
-        fe_mask = torch.cat([fe_mask, fe_mask], dim=0)
-        edge_index_out = edge_index[:, ~fe_mask]
-    return edge, edge_index_out
-
-def get_edge_color(edges, uniform=False):
-    """
-        edges: torch.tensor, shape [2, num_edges]
-    """
-    num_nodes = torch.max(edges).item()+1
-    # V = int(num_nodes)
-    # E = int(edges.shape[1])
-    # edge_coloring_input = [f"{V} {E}"]
-    # for each in edges.t():
-    #     edge_coloring_input += [f"{each[0]} {each[1]}"]
-    # edge_coloring_out = edge_coloring(edge_coloring_input) # list of colors, the same order as input
-
-    # TODO: reindex the edges to reduce the time complexity
-    subset, inv = edges.flatten().unique(return_inverse=True)
-    node_idx = edges.new_full((num_nodes, ), -1)
-    node_idx[subset] = torch.arange(subset.size(0), device=edges.device)
-    edges = node_idx[edges]
-    V = int(subset.size(0))
-    E = int(edges.shape[1])
-    edge_coloring_input = [f"{V} {E}"]
-    for each in edges.t():
-        edge_coloring_input += [f"{each[0]} {each[1]}"]
-    edge_coloring_out = edge_coloring(edge_coloring_input, uniform) # list of colors, the same order as input
-    return torch.IntTensor(edge_coloring_out)
 
 
 def str2bool(v):
@@ -184,10 +115,7 @@ def str2bool(v):
 def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
     data_folder = Path(root) / name
     data_folder.mkdir(parents=True, exist_ok=True)
-    if val_ratio == 0.05 and test_ratio == 0.1:
-        file_path = data_folder / f"split{run}.pt" # default split ratio
-    else:
-        file_path = data_folder / f"split{run}_{int(100*val_ratio)}_{int(100*test_ratio)}.pt"
+    file_path = data_folder / f"split{run}_{int(100*val_ratio)}_{int(100*test_ratio)}.pt"
     if file_path.exists():
         data, split_edge = torch.load(file_path)
     else:

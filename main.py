@@ -1,34 +1,33 @@
 import argparse
+import os
 import time
 from pathlib import Path
 
 import numpy as np
+from sklearn.metrics import roc_auc_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 from ogb.linkproppred import Evaluator, PygLinkPropPredDataset
-from sklearn.metrics import *
 from torch.nn import BCELoss
 from torch.utils.data import DataLoader
 from torch_geometric.utils import (degree,
                                    negative_sampling)
 from tqdm import tqdm
 
-from discrepancy import cmd
 from logger import Logger
 from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor
 from utils import ( get_dataset, data_summary, initialize, create_input,
                    set_random_seeds, str2bool, get_data_split, make_edge_index)
 
 
-def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_name, dataset):
+def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_name, dataset, use_sp_matrix):
     model.train()
     predictor.train()
 
     criterion = BCELoss(reduction='mean')
     pos_train_edge = split_edge['train']['edge'].to(create_input(data).device)
-    edge_index = data.edge_index
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
@@ -38,13 +37,16 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
                            shuffle=True):
         if encoder_name == 'mlp':
             h = model(create_input(data))
+        elif use_sp_matrix:
+            h = model(create_input(data), data.adj_t)
         else:
-            h = model(create_input(data), edge_index)
+            h = model(create_input(data), data.edge_index)
+
 
         edge = pos_train_edge[perm].t()
 
         if dataset != "collab" and dataset != "ppa":
-            neg_edge = negative_sampling(data.full_edge_index, num_nodes=create_input(data).size(0),
+            neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
                                  num_neg_samples=perm.size(0), method='dense')
         elif dataset == "collab" or dataset == "ppa":
             neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
@@ -68,12 +70,14 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
 
 
 @torch.no_grad()
-def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name, dataset):
+def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name, dataset, use_sp_matrix):
     model.eval()
     predictor.eval()
 
     if encoder_name == 'mlp':
         h = model(create_input(data))
+    elif use_sp_matrix:
+        h = model(create_input(data), data.adj_t)
     else:
         h = model(create_input(data), data.edge_index)
 
@@ -123,7 +127,7 @@ def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name
     
     results = {}
     if dataset != "collab" and dataset != "ppa":
-        for K in [10, 20, 30, 50]:
+        for K in [10, 20, 50, 100]:
             evaluator.K = K
             valid_hits = evaluator.eval({
                 'y_pred_pos': pos_valid_pred,
@@ -161,10 +165,8 @@ def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name
 
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
-    parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--log_steps', type=int, default=20)
-    parser.add_argument('--encoder', type=str, default='sage')
-    parser.add_argument('--num_layers', type=int, default=2)
+    parser.add_argument('--dataset', type=str, default='collab')
+    parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -172,17 +174,20 @@ def main():
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--eval_steps', type=int, default=5)
     parser.add_argument('--runs', type=int, default=10)
-    parser.add_argument('--dataset_dir', type=str, default='./data')
-    parser.add_argument('--log_dir', type=str, default='./logs')
-    parser.add_argument('--datasets', type=str, default='collab')
+    parser.add_argument('--num_layers', type=int, default=2)
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--initial', type=str, default='', choices=['', 'one-hot', 'trainable'])
     parser.add_argument('--predictor', type=str, default='mlp')  ##inner/mlp
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
     parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
     parser.add_argument('--val_ratio', type=float, default=0.05)
     parser.add_argument('--test_ratio', type=float, default=0.1)
+    parser.add_argument('--dataset_dir', type=str, default='./data')
+    parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--data_split_only', type=str2bool, default='False')
     parser.add_argument('--print_summary', type=str, default='')
+    parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
 
     args = parser.parse_args()
     if not args.print_summary:
@@ -192,15 +197,16 @@ def main():
     device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
 
-    # if args.datasets == "cora" or args.datasets == "citeseer" or args.datasets == "pubmed":
-    if args.datasets != "collab" and args.datasets != "ppa":
-        dataset = get_dataset(args.dataset_dir, args.datasets)
+    # if args.dataset == "cora" or args.dataset == "citeseer" or args.dataset == "pubmed":
+    if args.dataset != "collab" and args.dataset != "ppa":
+        dataset = get_dataset(args.dataset_dir, args.dataset)
         data = dataset[0]
 
-    elif args.datasets == "collab" or args.datasets == "ppa":
-        dataset = PygLinkPropPredDataset(name=('ogbl-' + args.datasets), root=args.dataset_dir)
+    elif args.dataset == "collab" or args.dataset == "ppa":
+        dataset = PygLinkPropPredDataset(name=('ogbl-' + args.dataset), root=args.dataset_dir)
         data = dataset[0]
-        # data = T.ToSparseTensor()(data)
+        if args.use_sp_matrix:
+            data = T.ToSparseTensor(remove_edge_index=False)(data)
 
         split_edge = dataset.get_edge_split()
         print("-"*20)
@@ -217,8 +223,8 @@ def main():
         # split_edge['train']['edge'] = data.adj_t.t()
 
     if args.print_summary:
-        data_summary(args.datasets, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
-    final_log_path = Path(args.log_dir) / f"{args.datasets}_{args.encoder}_val_{int(100*args.val_ratio)}_test_{int(100*args.test_ratio)}_{args.initial}_{int(time.time())}.txt"
+        data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
+    final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
     with open(final_log_path, 'w') as f:
         print(args, file=f)
 
@@ -226,15 +232,15 @@ def main():
                               args.num_layers, args.dropout).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
-    if args.datasets != "collab" and args.datasets != "ppa":
+    if args.dataset != "collab" and args.dataset != "ppa":
         loggers = {
             'Hits@10': Logger(args.runs, args),
             'Hits@20': Logger(args.runs, args),
-            'Hits@30': Logger(args.runs, args),
             'Hits@50': Logger(args.runs, args),
+            'Hits@100': Logger(args.runs, args),
             'AUC': Logger(args.runs, args),
         }
-    elif args.datasets == "collab" or args.datasets == "ppa":
+    elif args.dataset == "collab" or args.dataset == "ppa":
         loggers = {
             'Hits@10': Logger(args.runs, args),
             'Hits@50': Logger(args.runs, args),
@@ -244,8 +250,10 @@ def main():
 
     val_max = 0.0
     for run in range(args.runs):
-        if args.datasets != "collab" and args.datasets != "ppa":
-            data, split_edge = get_data_split(args.dataset_dir, args.datasets, args.val_ratio, args.test_ratio, run=run)
+        if args.dataset != "collab" and args.dataset != "ppa":
+            data, split_edge = get_data_split(args.dataset_dir, args.dataset, args.val_ratio, args.test_ratio, run=run)
+            if args.use_sp_matrix:
+                data = T.ToSparseTensor(remove_edge_index=False)(data)
             if args.data_split_only:
                 if run == args.runs - 1:
                     exit(0)
@@ -254,7 +262,7 @@ def main():
         data, input_size = initialize(data, args.initial)
         data = data.to(device)
         if args.encoder == 'sage':
-            model = SAGE(args.datasets, input_size, args.hidden_channels,
+            model = SAGE(args.dataset, input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.dropout).to(device)
         elif args.encoder == 'gcn':
@@ -284,15 +292,11 @@ def main():
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(model, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.encoder, args.datasets)
+                         optimizer, args.batch_size, args.encoder, args.dataset, args.use_sp_matrix)
 
             results = test(model, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.encoder, args.datasets)
+                            evaluator, args.batch_size, args.encoder, args.dataset, args.use_sp_matrix)
 
-            # if results['Hits@50'][1] > val_max:
-            #     val_max = results['Hits@50'][1]
-            #     if args.encoder == 'sage':
-            #         torch.save({'gnn': model.state_dict(), 'predictor': predictor.state_dict()}, "saved_models/" + args.datasets + "-sage.pkl")
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
                 cnt_wait = 0
