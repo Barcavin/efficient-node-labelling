@@ -118,6 +118,7 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
     file_path = data_folder / f"split{run}_{int(100*val_ratio)}_{int(100*test_ratio)}.pt"
     if file_path.exists():
         data, split_edge = torch.load(file_path)
+        print(f"load split edges from {file_path}")
     else:
         dataset = get_dataset(root, name)
         original = dataset[0]

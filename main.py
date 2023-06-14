@@ -177,12 +177,12 @@ def main():
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--log_steps', type=int, default=20)
-    parser.add_argument('--initial', type=str, default='', choices=['', 'one-hot', 'trainable'])
+    parser.add_argument('--initial', type=str, default='trainable', choices=['', 'one-hot', 'trainable'])
     parser.add_argument('--predictor', type=str, default='mlp')  ##inner/mlp
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
     parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
-    parser.add_argument('--val_ratio', type=float, default=0.05)
-    parser.add_argument('--test_ratio', type=float, default=0.1)
+    parser.add_argument('--val_ratio', type=float, default=0.1)
+    parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--dataset_dir', type=str, default='./data')
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--data_split_only', type=str2bool, default='False')
@@ -205,8 +205,6 @@ def main():
     elif args.dataset == "collab" or args.dataset == "ppa":
         dataset = PygLinkPropPredDataset(name=('ogbl-' + args.dataset), root=args.dataset_dir)
         data = dataset[0]
-        if args.use_sp_matrix:
-            data = T.ToSparseTensor(remove_edge_index=False)(data)
 
         split_edge = dataset.get_edge_split()
         print("-"*20)
@@ -217,6 +215,8 @@ def main():
         print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
         data.edge_index = make_edge_index(split_edge["train"]["edge"])
         input_size = data.num_features
+        if args.use_sp_matrix:
+            data = T.ToSparseTensor(remove_edge_index=False)(data)
         # args.metric = 'Hits@50'
         ##add training edges into message passing
         # data.adj_t = torch.cat((edge_index, split_edge['train']['edge'].t()), dim=1)
