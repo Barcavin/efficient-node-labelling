@@ -157,17 +157,23 @@ def spmnotoverlap_(adj1: SparseTensor,
     return elements in adj1 but not in adj2 and in adj2 but not adj1
     '''
     # assert adj1.sizes() == adj2.sizes()
+
+    
     element1 = spm2elem(adj1)
     element2 = spm2elem(adj2)
 
-    idx = torch.searchsorted(element1[:-1], element2)
-    matchedmask = (element1[idx] == element2)
+    if element1.shape[0] == 0:
+        retelem1 = element1
+        retelem2 = element2
+    else:
+        idx = torch.searchsorted(element1[:-1], element2)
+        matchedmask = (element1[idx] == element2)
 
-    maskelem1 = torch.ones_like(element1, dtype=torch.bool)
-    maskelem1[idx[matchedmask]] = 0
-    retelem1 = element1[maskelem1]
+        maskelem1 = torch.ones_like(element1, dtype=torch.bool)
+        maskelem1[idx[matchedmask]] = 0
+        retelem1 = element1[maskelem1]
 
-    retelem2 = element2[torch.logical_not(matchedmask)]
+        retelem2 = element2[torch.logical_not(matchedmask)]
     return elem2spm(retelem1, adj1.sizes()), elem2spm(retelem2, adj2.sizes())
 
 
@@ -228,7 +234,8 @@ def adjoverlap(adj1: SparseTensor,
 
 def de_plus_finder(adj, edges, mask_target=False):
     if mask_target:
-        target_adj = SparseTensor.from_edge_index(edges, sparse_sizes=adj.sizes())
+        undirected_edges = torch.cat((edges, edges.flip(0)), dim=-1)
+        target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj.sizes())
         adj, _ = spmnotoverlap_(adj, target_adj)
     # find 1,2 hops of target nodes
     l_1_1, l_1_not1, l_not1_1 = adjoverlap(adj[edges[0]], adj[edges[1]], calresadj=True) # not 1 == (dist=0) U dist(>=2)
@@ -358,8 +365,69 @@ if __name__ == "__main__":
     check_all(l_2_2, l_2_2_true)
     check_all(l_2_inf, l_2_inf_true)
     check_all(l_inf_2, l_inf_2_true)
+
     print('-'*100)
-    print("test de_plus_finder")
+    print("remove target edges")
+    l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, True)
+    print(f"l_1_1: {l_1_1}")
+    print(f"l_1_2: {l_1_2}")
+    print(f"l_2_1: {l_2_1}")
+    print(f"l_1_inf: {l_1_inf}")
+    print(f"l_inf_1: {l_inf_1}")
+    print(f"l_2_2: {l_2_2}")
+    print(f"l_2_inf: {l_2_inf}")
+    print(f"l_inf_2: {l_inf_2}")
+    l_1_1_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[0,1],
+             [5,4]]
+        ), sparse_sizes=(2,6))
+    l_1_2_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[],
+             []]
+        ), sparse_sizes=(2,6))
+    l_2_1_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[],
+             []]
+        ), sparse_sizes=(2,6))
+    l_1_inf_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[1],
+             [1]]
+        ), sparse_sizes=(2,6))
+    l_inf_1_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[0],
+             [2]]
+        ), sparse_sizes=(2,6))
+    l_2_2_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[],
+             []]
+        ), sparse_sizes=(2,6))
+    l_2_inf_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[1],
+             [5]]
+        ), sparse_sizes=(2,6))
+    l_inf_2_true = SparseTensor.from_edge_index(
+        torch.LongTensor(
+            [[0],
+             [4]]
+        ), sparse_sizes=(2,6))
+    check_all(l_1_1, l_1_1_true)
+    check_all(l_1_2, l_1_2_true)
+    check_all(l_2_1, l_2_1_true)
+    check_all(l_1_inf, l_1_inf_true)
+    check_all(l_inf_1, l_inf_1_true)
+    check_all(l_2_2, l_2_2_true)
+    check_all(l_2_inf, l_2_inf_true)
+    check_all(l_inf_2, l_inf_2_true)
+
+
+    print('-'*100)
     "https://www.researchgate.net/figure/The-graph-shown-in-a-has-its-adjacency-matrix-in-b-A-connection-between-two-nodes-is_fig6_291821895"
     adj = SparseTensor.from_dense(
         torch.LongTensor(
