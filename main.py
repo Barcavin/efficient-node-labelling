@@ -10,14 +10,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 from ogb.linkproppred import Evaluator, PygLinkPropPredDataset
-from torch.nn import BCELoss
+from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
 from torch_geometric.utils import (degree,
                                    negative_sampling)
 from tqdm import tqdm
 
 from logger import Logger
-from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor
+from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling
 from utils import ( get_dataset, data_summary, initialize, create_input,
                    set_random_seeds, str2bool, get_data_split, make_edge_index)
 
@@ -26,7 +26,7 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
     model.train()
     predictor.train()
 
-    criterion = BCELoss(reduction='mean')
+    criterion = BCEWithLogitsLoss(reduction='mean')
     pos_train_edge = split_edge['train']['edge'].to(create_input(data).device)
     
     optimizer.zero_grad()
@@ -54,7 +54,7 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
 
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(h.device)
-        out = predictor(h[train_edges[0]], h[train_edges[1]]).squeeze()
+        out = predictor(h, data.adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
         loss.backward()
@@ -88,41 +88,29 @@ def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name
     neg_test_edge = split_edge['test']['edge_neg'].to(h.device)
 
     pos_valid_preds = []
-    pos_valid_x = []
-    pos_valid_out = []
     for perm in DataLoader(range(pos_valid_edge.size(0)), batch_size):
         edge = pos_valid_edge[perm].t()
-        out, x = predictor(h[edge[0]], h[edge[1]],return_hidden=True)
+        out = predictor(h, data.adj_t, edge)
         pos_valid_preds += [out.squeeze().cpu()]
-        pos_valid_x += [x.cpu()]
-        pos_valid_out += [out.cpu()]
     pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
-    pos_valid_x = torch.cat(pos_valid_x, dim=0)
-    pos_valid_out = torch.cat(pos_valid_out, dim=0).squeeze()
 
     neg_valid_preds = []
     for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
         edge = neg_valid_edge[perm].t()
-        neg_valid_preds += [predictor(h[edge[0]], h[edge[1]]).squeeze().cpu()]
+        neg_valid_preds += [predictor(h, data.adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
 
     pos_test_preds = []
-    pos_test_x = []
-    pos_test_out = []
     for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
         edge = pos_test_edge[perm].t()
-        out, x = predictor(h[edge[0]], h[edge[1]],return_hidden=True)
+        out = predictor(h, data.adj_t, edge)
         pos_test_preds += [out.squeeze().cpu()]
-        pos_test_x += [x.cpu()]
-        pos_test_out += [out.cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
-    pos_test_x = torch.cat(pos_test_x, dim=0)
-    pos_test_out = torch.cat(pos_test_out, dim=0).squeeze()
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
-        neg_test_preds += [predictor(h[edge[0]], h[edge[1]]).squeeze().cpu()]
+        neg_test_preds += [predictor(h, data.adj_t, edge).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
     
     results = {}
@@ -178,7 +166,8 @@ def main():
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--initial', type=str, default='trainable', choices=['', 'one-hot', 'trainable'])
-    parser.add_argument('--predictor', type=str, default='mlp')  ##inner/mlp
+    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
+    parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
     parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
     parser.add_argument('--val_ratio', type=float, default=0.1)
@@ -228,8 +217,12 @@ def main():
     with open(final_log_path, 'w') as f:
         print(args, file=f)
 
-    predictor = LinkPredictor(args.predictor, args.hidden_channels, args.hidden_channels, 1,
-                              args.num_layers, args.dropout).to(device)
+    if args.predictor in ['inner','mlp']:
+        predictor = LinkPredictor(args.predictor, args.hidden_channels, args.hidden_channels, 1,
+                                args.num_layers, args.dropout).to(device)
+    elif args.predictor == 'ENL':
+        predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
+                                args.num_layers, args.dropout, args.num_hops)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":

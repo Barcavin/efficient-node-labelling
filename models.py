@@ -221,7 +221,9 @@ class LinkPredictor(torch.nn.Module):
         for lin in self.lins:
             lin.reset_parameters()
 
-    def forward(self, x_i, x_j, return_hidden=False):
+    def forward(self, x, adj, edges):
+        x_i = x[edges[0]]
+        x_j = x[edges[1]]
         x = x_i * x_j
         if self.predictor == 'mlp':
             for lin in self.lins[:-1]:
@@ -233,11 +235,7 @@ class LinkPredictor(torch.nn.Module):
         elif self.predictor == 'inner':
             hidden = x
             out = torch.sum(x, dim=-1)
-        out = torch.sigmoid(out)
-        if return_hidden:
-            return out, hidden
-        else:
-            return out
+        return out
 
 class Teacher_LinkPredictor(torch.nn.Module):
     def __init__(self, predictor, in_channels, hidden_channels, out_channels, num_layers,
@@ -268,3 +266,47 @@ class Teacher_LinkPredictor(torch.nn.Module):
         elif self.predictor == 'inner':
             x = torch.sum(x, dim=-1)
         return torch.sigmoid(x)
+
+
+
+
+class EfficientNodeLabelling(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, num_layers,
+                 dropout, num_hops=2):
+        super(EfficientNodeLabelling, self).__init__()
+        out_channels = 1
+
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(in_channels, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
+
+        self.dropout = dropout
+        self.num_hops = num_hops
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+
+    def forward(self, x, adj, edges):
+        """
+        Args:
+            x: [N, in_channels] node embedding after GNN
+            adj: [N, N] adjacency matrix
+            edges: [2, E] target edges
+        """
+        # traditional target edge embedding
+        x_i = x[edges[0]]
+        x_j = x[edges[1]]
+        x = x_i * x_j
+        for lin in self.lins[:-1]:
+            x = lin(x)
+            x = torch.relu(x)
+            hidden = x
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        xij = self.lins[-1](x)
+        out = xij
+        
+
+        return out
