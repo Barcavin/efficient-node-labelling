@@ -167,6 +167,7 @@ def main():
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
+    parser.add_argument('--mask_target', type=str2bool, default='False', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
 
     # training setting
@@ -229,7 +230,7 @@ def main():
                                 args.num_layers, args.dropout).to(device)
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops).to(device)
+                                args.num_layers, args.dropout, args.num_hops, args.mask_target).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":

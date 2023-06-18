@@ -1,8 +1,15 @@
-import torch
-from torch_sparse import SparseTensor
-from torch import Tensor
-import torch_sparse
 from typing import List, Tuple
+
+import numpy as np
+import torch
+import torch_sparse
+from torch import Tensor
+from torch_sparse import SparseTensor
+
+import scipy.sparse as ssp
+from scipy.sparse.csgraph import shortest_path
+from torch_geometric.data import Data
+
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
     '''
@@ -279,6 +286,182 @@ def check_all(pred, real):
     pred = pred.to_dense().numpy()
     real = real.to_dense().numpy()
     assert (pred == real).all()
+
+
+def neighbors(fringe, A, outgoing=True):
+    # Find all 1-hop neighbors of nodes in fringe from graph A, 
+    # where A is a scipy csr adjacency matrix.
+    # If outgoing=True, find neighbors with outgoing edges;
+    # otherwise, find neighbors with incoming edges (you should
+    # provide a csc matrix in this case).
+    if outgoing:
+        res = set(A[list(fringe)].indices)
+    else:
+        res = set(A[:, list(fringe)].indices)
+
+    return res
+
+def k_hop_subgraph(src, dst, num_hops, A):
+    # Extract the k-hop enclosing subgraph around link (src, dst) from A. 
+    nodes = [src, dst]
+    dists = [0, 0]
+    visited = set([src, dst])
+    fringe = set([src, dst])
+    for dist in range(1, num_hops+1):
+        fringe = neighbors(fringe, A)
+        fringe = fringe - visited
+        visited = visited.union(fringe)
+        if len(fringe) == 0:
+            break
+        nodes = nodes + list(fringe)
+        dists = dists + [dist] * len(fringe)
+    subgraph = A[nodes, :][:, nodes]
+
+    # Remove target link between the subgraph.
+    subgraph[0, 1] = 0
+    subgraph[1, 0] = 0
+
+    return nodes, subgraph, dists
+
+def construct_pyg_graph(node_ids, adj, dists, node_label='drnl'):
+    # Construct a pytorch_geometric graph from a scipy csr adjacency matrix.
+    u, v, r = ssp.find(adj)
+    num_nodes = adj.shape[0]
+    
+    node_ids = torch.LongTensor(node_ids)
+    u, v = torch.LongTensor(u), torch.LongTensor(v)
+    r = torch.LongTensor(r)
+    edge_index = torch.stack([u, v], 0)
+    edge_weight = r.to(torch.float)
+    if node_label == 'drnl':  # DRNL
+        z = drnl_node_labeling(adj, 0, 1)
+    elif node_label == 'drnl_plus':  # DRNL
+        z = drnl_node_labeling_plus(adj, 0, 1)
+    elif node_label == 'hop':  # mininum distance to src and dst
+        z = torch.tensor(dists)
+    elif node_label == 'zo':  # zero-one labeling trick
+        z = (torch.tensor(dists)==0).to(torch.long)
+    elif node_label == 'de':  # distance encoding
+        z = de_node_labeling(adj, 0, 1)
+    elif node_label == 'de+':
+        z = de_plus_node_labeling(adj, 0, 1)
+    elif node_label == 'degree':  # this is technically not a valid labeling trick
+        z = torch.tensor(adj.sum(axis=0)).squeeze(0)
+        z[z>100] = 100  # limit the maximum label to 100
+    else:
+        z = torch.zeros(len(dists), dtype=torch.long)
+    data = Data(x=None, edge_index=edge_index, edge_weight=edge_weight, z=z, 
+                    node_id=node_ids, num_nodes=num_nodes)
+    return data
+
+def drnl_node_labeling(adj, src, dst):
+    # Double Radius Node Labeling (DRNL).
+    src, dst = (dst, src) if src > dst else (src, dst)
+
+    idx = list(range(src)) + list(range(src + 1, adj.shape[0]))
+    adj_wo_src = adj[idx, :][:, idx]
+
+    idx = list(range(dst)) + list(range(dst + 1, adj.shape[0]))
+    adj_wo_dst = adj[idx, :][:, idx]
+
+    dist2src = shortest_path(adj_wo_dst, directed=False, unweighted=True, indices=src)
+    dist2src = np.insert(dist2src, dst, 0, axis=0)
+    dist2src = torch.from_numpy(dist2src)
+
+    dist2dst = shortest_path(adj_wo_src, directed=False, unweighted=True, indices=dst-1)
+    dist2dst = np.insert(dist2dst, src, 0, axis=0)
+    dist2dst = torch.from_numpy(dist2dst)
+
+    dist = dist2src + dist2dst
+    dist_over_2, dist_mod_2 = dist // 2, dist % 2
+
+    z = 1 + torch.min(dist2src, dist2dst)
+    z += dist_over_2 * (dist_over_2 + dist_mod_2 - 1)
+    z[src] = 1.
+    z[dst] = 1.
+    z[torch.isnan(z)] = 0.
+
+    return z.to(torch.long)
+
+def drnl_node_labeling_plus(adj, src, dst):
+    MAX_Z = 1000
+    # Double Radius Node Labeling (DRNL) plus.
+    src, dst = (dst, src) if src > dst else (src, dst)
+
+    idx = list(range(src)) + list(range(src + 1, adj.shape[0]))
+    adj_wo_src = adj[idx, :][:, idx]
+
+    idx = list(range(dst)) + list(range(dst + 1, adj.shape[0]))
+    adj_wo_dst = adj[idx, :][:, idx]
+
+    dist2src = shortest_path(adj_wo_dst, directed=False, unweighted=True, indices=src)
+    dist2src = np.insert(dist2src, dst, 0, axis=0)
+    dist2src = torch.from_numpy(dist2src)
+
+    dist2dst = shortest_path(adj_wo_src, directed=False, unweighted=True, indices=dst-1)
+    dist2dst = np.insert(dist2dst, src, 0, axis=0)
+    dist2dst = torch.from_numpy(dist2dst)
+
+    dist = dist2src + dist2dst
+    dist_over_2, dist_mod_2 = dist // 2, dist % 2
+
+    z = 1 + torch.min(dist2src, dist2dst)
+    z += dist_over_2 * (dist_over_2 + dist_mod_2 - 1)
+    z[src] = 1.
+    z[dst] = 1.
+    
+    dist2both_fill = torch.nan_to_num(dist2src,posinf=0) + torch.nan_to_num(dist2dst,posinf=0)
+    z[torch.isnan(z)] =  - dist2both_fill[torch.isnan(z)] # last z to denote those 0s to distance to one of the end nodes
+
+    return z.to(torch.long)
+
+
+def de_node_labeling(adj, src, dst, max_dist=3):
+    # Distance Encoding. See "Li et. al., Distance Encoding: Design Provably More 
+    # Powerful Neural Networks for Graph Representation Learning."
+    src, dst = (dst, src) if src > dst else (src, dst)
+
+    dist = shortest_path(adj, directed=False, unweighted=True, indices=[src, dst])
+    dist = torch.from_numpy(dist)
+
+    dist[dist > max_dist] = max_dist
+    dist[torch.isnan(dist)] = max_dist + 1
+
+    return dist.to(torch.long).t()
+
+
+def de_plus_node_labeling(adj, src, dst, max_dist=100):
+    # Distance Encoding Plus. When computing distance to src, temporarily mask dst;
+    # when computing distance to dst, temporarily mask src. Essentially the same as DRNL.
+    src, dst = (dst, src) if src > dst else (src, dst)
+
+    idx = list(range(src)) + list(range(src + 1, adj.shape[0]))
+    adj_wo_src = adj[idx, :][:, idx]
+
+    idx = list(range(dst)) + list(range(dst + 1, adj.shape[0]))
+    adj_wo_dst = adj[idx, :][:, idx]
+
+    dist2src = shortest_path(adj_wo_dst, directed=False, unweighted=True, indices=src)
+    dist2src = np.insert(dist2src, dst, 0, axis=0)
+    dist2src = torch.from_numpy(dist2src)
+
+    dist2dst = shortest_path(adj_wo_src, directed=False, unweighted=True, indices=dst-1)
+    dist2dst = np.insert(dist2dst, src, 0, axis=0)
+    dist2dst = torch.from_numpy(dist2dst)
+
+    dist = torch.cat([dist2src.view(-1, 1), dist2dst.view(-1, 1)], 1)
+    dist[dist > max_dist] = max_dist
+    dist[torch.isnan(dist)] = max_dist + 1
+
+    return dist.to(torch.long)
+
+
+def seal_extractor(src, dst, num_hops, A:SparseTensor, node_label='drnl'):
+    # SparseTensor to ssp.csr
+    A = A.to_scipy(layout='csr')
+    nodes, subgraph, dists = k_hop_subgraph(src, dst, num_hops, A)
+    data = construct_pyg_graph(nodes, subgraph, dists, node_label)
+    return data
 
 if __name__ == "__main__":
     adj1 = SparseTensor.from_edge_index(
