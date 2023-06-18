@@ -298,6 +298,9 @@ class EfficientNodeLabelling(torch.nn.Module):
     def reset_parameters(self):
         for lin in self.lins:
             lin.reset_parameters()
+        self.z_embedding.reset_parameters()
+        self.lin1.reset_parameters()
+        self.lin2.reset_parameters()
 
     def forward(self, x, adj, edges):
         """
