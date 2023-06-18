@@ -255,16 +255,16 @@ def de_plus_finder(adj, edges, mask_target=False):
     l_1_0inf = adjoverlap(l_1_not1, l_1_not2)
     l_0inf_1 = adjoverlap(l_not1_1, l_not2_1)
 
-    remove_0s = SparseTensor.from_edge_index(
-        torch.stack([torch.arange(edges.size(0)).repeat_interleave(2), edges.t().reshape(-1)]),
-        sparse_sizes=(edges.size(0), adj.size(1)))
-    l_1_inf,_ = spmnotoverlap_(l_1_0inf, remove_0s)
-    l_inf_1,_ = spmnotoverlap_(l_0inf_1, remove_0s)
+    l_0_0 = SparseTensor.from_edge_index(
+        torch.stack([torch.arange(edges.size(1)).repeat_interleave(2).to(edges.device), edges.t().reshape(-1)]),
+        sparse_sizes=(edges.size(1), adj.size(1)))
+    l_1_inf,_ = spmnotoverlap_(l_1_0inf, l_0_0)
+    l_inf_1,_ = spmnotoverlap_(l_0inf_1, l_0_0)
 
     l_2_inf = adjoverlap(l_2_not2, l_2_not1)
     l_inf_2 = adjoverlap(l_not2_2, l_not1_2)
 
-    return l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2
+    return l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2
 
 
 def isSymmetric(mat):
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     print(adj)
     edges = torch.LongTensor([[0,2],[1,3]])
     print(f"edges: {edges}")
-    l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges)
+    _,l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges)
     print(f"l_1_1: {l_1_1}")
     print(f"l_1_2: {l_1_2}")
     print(f"l_2_1: {l_2_1}")
@@ -368,7 +368,7 @@ if __name__ == "__main__":
 
     print('-'*100)
     print("remove target edges")
-    l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, True)
+    _,l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, True)
     print(f"l_1_1: {l_1_1}")
     print(f"l_1_2: {l_1_2}")
     print(f"l_2_1: {l_2_1}")
@@ -446,7 +446,7 @@ if __name__ == "__main__":
     assert isSymmetric(adj.to_dense().numpy())
     edges = torch.LongTensor([[0,2],[1,3]])
     print(f"edges: {edges}")
-    l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges)
+    _,l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges)
     print(f"l_1_1: {l_1_1}")
     print(f"l_1_2: {l_1_2}")
     print(f"l_2_1: {l_2_1}")

@@ -1,9 +1,14 @@
 import torch
 import torch.nn as nn
-
-from torch_geometric.nn import GCNConv, SAGEConv, GATConv, APPNP
 import torch.nn.functional as F
+from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
+                                global_add_pool, global_max_pool,
+                                global_mean_pool, global_sort_pool)
+from torch_sparse import SparseTensor
+
 from Conv import Sage_conv
+from node_label import de_plus_finder
+
 
 class MLP(nn.Module):
     def __init__(
@@ -274,16 +279,21 @@ class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  dropout, num_hops=2):
         super(EfficientNodeLabelling, self).__init__()
-        out_channels = 1
 
+        total_input_dim =  hidden_channels # + in_channels
         self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(in_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(total_input_dim, hidden_channels))
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
 
         self.dropout = dropout
         self.num_hops = num_hops
+
+        self.max_z = 4
+        self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
+        self.lin1 = nn.Linear(num_layers * hidden_channels, hidden_channels)
+        self.lin2 = nn.Linear(hidden_channels, 1)
 
     def reset_parameters(self):
         for lin in self.lins:
@@ -296,17 +306,53 @@ class EfficientNodeLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
+        
+        l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges)
+        # concatenate the structural embedding
+        z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
+                       [(1,1)]*l_1_1.nnz()+
+                       [(1,2)]*l_1_2.nnz()+
+                       [(2,1)]*l_2_1.nnz()+
+                       [(1,3)]*l_1_inf.nnz()+
+                       [(3,1)]*l_inf_1.nnz()+
+                       [(2,2)]*l_2_2.nnz()+
+                       [(2,3)]*l_2_inf.nnz()+
+                       [(3,2)]*l_inf_2.nnz()).to(x.device)
+        z_emb = self.z_embedding(z).sum(dim=1)
+        batch = torch.concat([get_node_ids(l_0_0),
+                              get_node_ids(l_1_1),
+                              get_node_ids(l_1_2),
+                              get_node_ids(l_2_1),
+                              get_node_ids(l_1_inf),
+                              get_node_ids(l_inf_1),
+                              get_node_ids(l_2_2),
+                              get_node_ids(l_2_inf),
+                              get_node_ids(l_inf_2)], dim=0)
         # traditional target edge embedding
         x_i = x[edges[0]]
         x_j = x[edges[1]]
         x = x_i * x_j
+        x = z_emb  # TODO: aggregate node embedding according to node labelling: torch.cat([x, z_emb], dim=1)
+        
+        xs = [x]
         for lin in self.lins[:-1]:
             x = lin(x)
-            x = torch.relu(x)
+            x = F.relu(x)
             hidden = x
             x = F.dropout(x, p=self.dropout, training=self.training)
-        xij = self.lins[-1](x)
-        out = xij
-        
+            xs.append(x)
+        x = self.lins[-1](x)
+        xs.append(x)
 
-        return out
+        x = torch.cat(xs[1:], dim=-1)
+        x = global_mean_pool(x, batch)
+        x = F.relu(self.lin1(x))
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.lin2(x)
+        return x
+
+
+
+def get_node_ids(l:SparseTensor):
+    row, col, _ = l.coo()
+    return row

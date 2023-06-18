@@ -222,7 +222,7 @@ def main():
                                 args.num_layers, args.dropout).to(device)
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops)
+                                args.num_layers, args.dropout, args.num_hops).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":
