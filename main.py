@@ -153,30 +153,37 @@ def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name
 
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
+    # dataset setting
     parser.add_argument('--dataset', type=str, default='collab')
-    parser.add_argument('--encoder', type=str, default='gcn')
-    parser.add_argument('--hidden_channels', type=int, default=256)
-    parser.add_argument('--dropout', type=float, default=0.5)
-    parser.add_argument('--batch_size', type=int, default=64 * 1024)
-    parser.add_argument('--lr', type=float, default=0.005)
-    parser.add_argument('--epochs', type=int, default=20000)
-    parser.add_argument('--eval_steps', type=int, default=5)
-    parser.add_argument('--runs', type=int, default=10)
-    parser.add_argument('--num_layers', type=int, default=2)
-    parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--initial', type=str, default='trainable', choices=['', 'one-hot', 'trainable'])
-    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
-    parser.add_argument('--num_hops', type=int, default=2)
-    parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
-    parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
     parser.add_argument('--val_ratio', type=float, default=0.1)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--dataset_dir', type=str, default='./data')
+
+    # model setting
+    parser.add_argument('--encoder', type=str, default='gcn')
+    parser.add_argument('--hidden_channels', type=int, default=256)
+    parser.add_argument('--dropout', type=float, default=0.5)
+    parser.add_argument('--num_layers', type=int, default=2)
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
+    parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
+
+    # training setting
+    parser.add_argument('--batch_size', type=int, default=64 * 1024)
+    parser.add_argument('--epochs', type=int, default=20000)
+    parser.add_argument('--num_hops', type=int, default=2)
+    parser.add_argument('--lr', type=float, default=0.005)
+    parser.add_argument('--eval_steps', type=int, default=5)
+    parser.add_argument('--log_steps', type=int, default=20)
+    parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
+    parser.add_argument('--runs', type=int, default=10)
+    parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
+
+    # misc
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--data_split_only', type=str2bool, default='False')
     parser.add_argument('--print_summary', type=str, default='')
-    parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
 
     args = parser.parse_args()
     if not args.print_summary:
