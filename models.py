@@ -277,19 +277,23 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, mask_target=False, dgcnn=False):
+                 dropout, num_hops=2, mask_target=False, dgcnn=False, use_feature=False):
         super(EfficientNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
         self.mask_target = mask_target
         self.dgcnn = dgcnn
+        self.use_feature = use_feature
+        if not self.use_feature:
+            in_channels = 0
 
         self.max_z = 4
         self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
-        if self.dgcnn:
+        if self.dgcnn: # TODO: if enable DGCNN, GNN encoding may require tanh as discussed in the paper
+                       #       Check why dgcnn sometimes run OOM
             self.k = 45 # TODO: dynamic determine the number of nodes to be held for each target edge
-            total_latent_dim =  hidden_channels #+ in_channels
+            total_latent_dim =  hidden_channels + in_channels
             conv1d_channels = [16, 32]
             conv1d_kws = [total_latent_dim, 5]
             self.conv1 = nn.Conv1d(1, conv1d_channels[0], conv1d_kws[0],
@@ -300,7 +304,7 @@ class EfficientNodeLabelling(torch.nn.Module):
             dense_dim = int((self.k - 2) / 2 + 1)
             dense_dim = (dense_dim - conv1d_kws[1] + 1) * conv1d_channels[1]
         else:
-            dense_dim = hidden_channels #+ in_channels
+            dense_dim = hidden_channels + in_channels
         self.lins = torch.nn.ModuleList()
         self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
         for _ in range(num_layers - 2):
@@ -312,8 +316,9 @@ class EfficientNodeLabelling(torch.nn.Module):
         for lin in self.lins:
             lin.reset_parameters()
         self.z_embedding.reset_parameters()
-        self.conv1.reset_parameters()
-        self.conv2.reset_parameters()
+        if self.dgcnn:
+            self.conv1.reset_parameters()
+            self.conv2.reset_parameters()
 
     def forward(self, x, adj, edges):
         """
@@ -335,25 +340,30 @@ class EfficientNodeLabelling(torch.nn.Module):
                        [(2,3)]*l_2_inf.nnz()+
                        [(3,2)]*l_inf_2.nnz()).to(x.device)
         z_emb = self.z_embedding(z).sum(dim=1)
-        batch = torch.concat([get_node_ids(l_0_0),
-                              get_node_ids(l_1_1),
-                              get_node_ids(l_1_2),
-                              get_node_ids(l_2_1),
-                              get_node_ids(l_1_inf),
-                              get_node_ids(l_inf_1),
-                              get_node_ids(l_2_2),
-                              get_node_ids(l_2_inf),
-                              get_node_ids(l_inf_2)], dim=0)
-        # traditional target edge embedding
-        x_i = x[edges[0]]
-        x_j = x[edges[1]]
-        x = x_i * x_j
-        x = z_emb  # TODO: aggregate node embedding according to node labelling: torch.cat([x, z_emb], dim=1)
+        batch, node_ids = torch.concat([get_node_ids(l_0_0),
+                                        get_node_ids(l_1_1),
+                                        get_node_ids(l_1_2),
+                                        get_node_ids(l_2_1),
+                                        get_node_ids(l_1_inf),
+                                        get_node_ids(l_inf_1),
+                                        get_node_ids(l_2_2),
+                                        get_node_ids(l_2_inf),
+                                        get_node_ids(l_inf_2)], dim=1)
+        x_all =  z_emb
+
+        # x = x[node_ids]
+        # x = torch.cat([x, z_emb], dim=1)
         
         if self.dgcnn:
-            x = self.dgcnn_pooling(x, batch)
+            out = self.dgcnn_pooling(x_all, batch)
         else:
-            x = global_mean_pool(x, batch)
+            out = global_mean_pool(x_all, batch)
+        if self.use_feature:
+            x_i = x[edges[0]]
+            x_j = x[edges[1]]
+            x = torch.cat([x_i*x_j, out], dim=1)
+        else:
+            x = out
         for lin in self.lins[:-1]:
             x = lin(x)
             x = F.relu(x)
@@ -376,4 +386,4 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 def get_node_ids(l:SparseTensor):
     row, col, _ = l.coo()
-    return row
+    return torch.stack([row, col], dim=0)

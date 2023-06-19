@@ -14,16 +14,19 @@ from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
 from torch_geometric.utils import (degree,
                                    negative_sampling)
+from torch_sparse import SparseTensor
 from tqdm import tqdm
 
 from logger import Logger
 from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling
+from node_label import spmnotoverlap_
 from utils import ( get_dataset, data_summary, initialize, create_input,
                    set_random_seeds, str2bool, get_data_split, make_edge_index)
 
 
-def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_name, dataset, use_sp_matrix):
-    model.train()
+def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_name, 
+          dataset, use_sp_matrix, mask_target):
+    encoder.train()
     predictor.train()
 
     criterion = BCEWithLogitsLoss(reduction='mean')
@@ -35,32 +38,40 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
     #                        shuffle=True)) ):
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
                            shuffle=True):
-        if encoder_name == 'mlp':
-            h = model(create_input(data))
-        elif use_sp_matrix:
-            h = model(create_input(data), data.adj_t)
-        else:
-            h = model(create_input(data), data.edge_index)
-
-
         edge = pos_train_edge[perm].t()
+        if mask_target:
+            adj_t = data.adj_t
+            undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
+            target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
+            adj_t, _ = spmnotoverlap_(adj_t, target_adj)
+        else:
+            adj_t = data.adj_t
+
+
+        if encoder_name == 'mlp' or isinstance(encoder, nn.Identity):
+            h = encoder(create_input(data))
+        elif use_sp_matrix:
+            h = encoder(create_input(data), adj_t)
+        else:
+            h = encoder(create_input(data), data.edge_index)
+
 
         if dataset != "collab" and dataset != "ppa":
             neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
                                  num_neg_samples=perm.size(0), method='dense')
         elif dataset == "collab" or dataset == "ppa":
             neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
-                             device=h.device)
+                             device=create_input(data).device)
 
         train_edges = torch.cat((edge, neg_edge), dim=-1)
-        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(h.device)
-        out = predictor(h, data.adj_t, train_edges).squeeze()
+        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(create_input(data).device)
+        out = predictor(h, adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(create_input(data), 1.0)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(encoder.parameters(), 1.0)
         torch.nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad()
@@ -71,16 +82,16 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
 
 
 @torch.no_grad()
-def test(model, predictor, data, split_edge, evaluator, batch_size, encoder_name, dataset, use_sp_matrix):
-    model.eval()
+def test(encoder, predictor, data, split_edge, evaluator, batch_size, encoder_name, dataset, use_sp_matrix):
+    encoder.eval()
     predictor.eval()
 
-    if encoder_name == 'mlp':
-        h = model(create_input(data))
+    if encoder_name == 'mlp' or isinstance(encoder, nn.Identity):
+        h = encoder(create_input(data))
     elif use_sp_matrix:
-        h = model(create_input(data), data.adj_t)
+        h = encoder(create_input(data), data.adj_t)
     else:
-        h = model(create_input(data), data.edge_index)
+        h = encoder(create_input(data), data.edge_index)
 
     pos_train_edge = split_edge['train']['edge'].to(h.device)
     pos_valid_edge = split_edge['valid']['edge'].to(h.device)
@@ -168,6 +179,7 @@ def main():
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
+    parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--mask_target', type=str2bool, default='False', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
@@ -189,6 +201,8 @@ def main():
     parser.add_argument('--print_summary', type=str, default='')
 
     args = parser.parse_args()
+    if args.mask_target and not args.use_sp_matrix:
+        raise ValueError('mask_target can only be used when use_sp_matrix is True')
     if not args.print_summary:
         print(args)
     set_random_seeds(234)
@@ -232,7 +246,7 @@ def main():
                                 args.num_layers, args.dropout).to(device)
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops, args.mask_target, args.dgcnn).to(device)
+                                args.num_layers, args.dropout, args.num_hops, dgcnn=args.dgcnn, use_feature=args.use_feature).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":
@@ -264,29 +278,33 @@ def main():
                     continue
         data, input_size = initialize(data, args.initial)
         data = data.to(device)
-        if args.encoder == 'sage':
-            model = SAGE(args.dataset, input_size, args.hidden_channels,
+        if not args.use_feature:
+            # not using node features
+            encoder = nn.Identity()
+        elif args.encoder == 'sage':
+            encoder = SAGE(args.dataset, input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.dropout).to(device)
         elif args.encoder == 'gcn':
-            model = GCN(input_size, args.hidden_channels,
+            encoder = GCN(input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.dropout).to(device)
         elif args.encoder == 'appnp':
-            model = APPNP_model(input_size, args.hidden_channels,
+            encoder = APPNP_model(input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.dropout).to(device)
         elif args.encoder == 'gat':
-            model = GAT(input_size, args.hidden_channels,
+            encoder = GAT(input_size, args.hidden_channels,
                         args.hidden_channels, 1,
                         args.dropout).to(device)
         elif args.encoder == 'mlp':
-            model = MLP(args.num_layers, input_size, args.hidden_channels, args.hidden_channels, args.dropout).to(device)
+            encoder = MLP(args.num_layers, input_size, args.hidden_channels, args.hidden_channels, args.dropout).to(device)
 
-        model.reset_parameters()
+        if args.use_feature:
+            encoder.reset_parameters()
         predictor.reset_parameters()
-        parameters = list(model.parameters()) + list(predictor.parameters())
-        if hasattr(data, "emb"):
+        parameters = list(encoder.parameters()) + list(predictor.parameters())
+        if hasattr(data, "emb") and args.use_feature:
             parameters += list(data.emb.parameters())
         optimizer = torch.optim.Adam(parameters, lr=args.lr)
 
@@ -294,10 +312,11 @@ def main():
         best_val = 0.0
 
         for epoch in range(1, 1 + args.epochs):
-            loss = train(model, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.encoder, args.dataset, args.use_sp_matrix)
+            loss = train(encoder, predictor, data, split_edge,
+                         optimizer, args.batch_size, args.encoder, args.dataset, 
+                         args.use_sp_matrix, args.mask_target)
 
-            results = test(model, predictor, data, split_edge,
+            results = test(encoder, predictor, data, split_edge,
                             evaluator, args.batch_size, args.encoder, args.dataset, args.use_sp_matrix)
 
             if results[args.metric][0] >= best_val:
