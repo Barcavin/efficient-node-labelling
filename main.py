@@ -189,6 +189,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.005)
+    parser.add_argument('--weight_decay', type=float, default=0)
     parser.add_argument('--eval_steps', type=int, default=5)
     parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
@@ -306,7 +307,7 @@ def main():
         parameters = list(encoder.parameters()) + list(predictor.parameters())
         if hasattr(data, "emb") and args.use_feature:
             parameters += list(data.emb.parameters())
-        optimizer = torch.optim.Adam(parameters, lr=args.lr)
+        optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
 
         cnt_wait = 0
         best_val = 0.0
