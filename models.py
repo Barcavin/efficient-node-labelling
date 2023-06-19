@@ -277,31 +277,43 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, mask_target=False):
+                 dropout, num_hops=2, mask_target=False, dgcnn=False):
         super(EfficientNodeLabelling, self).__init__()
-
-        total_input_dim =  hidden_channels # + in_channels
-        self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(total_input_dim, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
 
         self.dropout = dropout
         self.num_hops = num_hops
         self.mask_target = mask_target
+        self.dgcnn = dgcnn
 
         self.max_z = 4
         self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
-        self.lin1 = nn.Linear(num_layers * hidden_channels, hidden_channels)
-        self.lin2 = nn.Linear(hidden_channels, 1)
+        if self.dgcnn:
+            self.k = 45 # TODO: dynamic determine the number of nodes to be held for each target edge
+            total_latent_dim =  hidden_channels #+ in_channels
+            conv1d_channels = [16, 32]
+            conv1d_kws = [total_latent_dim, 5]
+            self.conv1 = nn.Conv1d(1, conv1d_channels[0], conv1d_kws[0],
+                                conv1d_kws[0])
+            self.maxpool1d = nn.MaxPool1d(2, 2)
+            self.conv2 = nn.Conv1d(conv1d_channels[0], conv1d_channels[1],
+                                conv1d_kws[1], 1)
+            dense_dim = int((self.k - 2) / 2 + 1)
+            dense_dim = (dense_dim - conv1d_kws[1] + 1) * conv1d_channels[1]
+        else:
+            dense_dim = hidden_channels #+ in_channels
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, 1))
+
 
     def reset_parameters(self):
         for lin in self.lins:
             lin.reset_parameters()
         self.z_embedding.reset_parameters()
-        self.lin1.reset_parameters()
-        self.lin2.reset_parameters()
+        self.conv1.reset_parameters()
+        self.conv2.reset_parameters()
 
     def forward(self, x, adj, edges):
         """
@@ -338,21 +350,26 @@ class EfficientNodeLabelling(torch.nn.Module):
         x = x_i * x_j
         x = z_emb  # TODO: aggregate node embedding according to node labelling: torch.cat([x, z_emb], dim=1)
         
-        xs = [x]
+        if self.dgcnn:
+            x = self.dgcnn_pooling(x, batch)
+        else:
+            x = global_mean_pool(x, batch)
         for lin in self.lins[:-1]:
             x = lin(x)
             x = F.relu(x)
             hidden = x
             x = F.dropout(x, p=self.dropout, training=self.training)
-            xs.append(x)
-        x = self.lins[-1](x)
-        xs.append(x)
+        logit = self.lins[-1](x)
+        return logit
 
-        x = torch.cat(xs[1:], dim=-1)
-        x = global_mean_pool(x, batch)
-        x = F.relu(self.lin1(x))
-        x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.lin2(x)
+    def dgcnn_pooling(self, all_x, batch):
+        # Global pooling.
+        x = global_sort_pool(all_x, batch, self.k)
+        x = x.unsqueeze(1)  # [num_graphs, 1, k * hidden]
+        x = F.relu(self.conv1(x))
+        x = self.maxpool1d(x)
+        x = F.relu(self.conv2(x))
+        x = x.view(x.size(0), -1)  # [num_graphs, dense_dim]
         return x
 
 

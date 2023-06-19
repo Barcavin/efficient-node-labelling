@@ -65,6 +65,7 @@ def train(model, predictor, data, split_edge, optimizer, batch_size, encoder_nam
         optimizer.step()
         optimizer.zero_grad()
         total_examples += train_label.size(0)
+        total_loss += loss.item() * train_label.size(0)
     
     return total_loss / total_examples
 
@@ -169,6 +170,7 @@ def main():
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL"])  ##inner/mlp
     parser.add_argument('--mask_target', type=str2bool, default='False', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
+    parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -230,7 +232,7 @@ def main():
                                 args.num_layers, args.dropout).to(device)
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops, args.mask_target).to(device)
+                                args.num_layers, args.dropout, args.num_hops, args.mask_target, args.dgcnn).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":

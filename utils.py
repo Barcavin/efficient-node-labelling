@@ -27,10 +27,10 @@ def get_dataset(root, name: str):
         'cora': (datasets.Planetoid, 'Cora'),
         'citeseer': (datasets.Planetoid, 'Citeseer'),
         'pubmed': (datasets.Planetoid, 'Pubmed'),
-        'coauthor-cs': (datasets.Coauthor, 'CS'),
-        'coauthor-physics': (datasets.Coauthor, 'physics'),
-        'amazon-computers': (datasets.Amazon, 'Computers'),
-        'amazon-photos': (datasets.Amazon, 'Photo')
+        'cs': (datasets.Coauthor, 'CS'),
+        'physics': (datasets.Coauthor, 'physics'),
+        'computers': (datasets.Amazon, 'Computers'),
+        'photos': (datasets.Amazon, 'Photo')
     }
 
     # assert name in pyg_dataset_dict, "Dataset must be in {}".format(list(pyg_dataset_dict.keys()))
@@ -124,6 +124,7 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
         original = dataset[0]
         data, split_edge = do_edge_split(original, val_ratio=val_ratio, test_ratio=test_ratio)
         torch.save((data, split_edge), file_path)
+        print(f"save split edges to {file_path}")
     print("-"*20)
     print(f"train: {split_edge['train']['edge'].shape[0]}")
     print(f"{split_edge['train']['edge'][:10,:]}")
