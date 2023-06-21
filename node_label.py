@@ -4,11 +4,23 @@ import numpy as np
 import torch
 import torch_sparse
 from torch import Tensor
-from torch_sparse import SparseTensor
+from torch_sparse import SparseTensor, matmul
 
 import scipy.sparse as ssp
 from scipy.sparse.csgraph import shortest_path
 from torch_geometric.data import Data
+
+def propagation(adj_t: SparseTensor, dim: int=512):
+    x = torch.nn.init.normal_(torch.empty(adj_t.size(0), dim, dtype=torch.float32, device=adj_t.device))
+    one_hop_adj = adj_t
+    one_and_two_hop_adj = adj_t @ adj_t
+    adj_t_with_self_loop = adj_t.fill_diag(1)
+
+    two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+
+    one_hop_x = matmul(one_hop_adj, x)
+    two_hop_x = matmul(two_hop_adj, x)
+    return one_hop_x, two_hop_x
 
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
@@ -183,6 +195,30 @@ def spmnotoverlap_(adj1: SparseTensor,
         retelem2 = element2[torch.logical_not(matchedmask)]
     return elem2spm(retelem1, adj1.sizes()), elem2spm(retelem2, adj2.sizes())
 
+def spmdiff_(adj1: SparseTensor,
+                   adj2: SparseTensor) -> Tuple[SparseTensor, SparseTensor]:
+    '''
+    return elements in adj1 but not in adj2 and in adj2 but not adj1
+    '''
+    # assert adj1.sizes() == adj2.sizes()
+
+    
+    element1 = spm2elem(adj1)
+    element2 = spm2elem(adj2)
+
+    if element1.shape[0] == 0:
+        retelem1 = element1
+        retelem2 = element2
+    else:
+        idx = torch.searchsorted(element1[:-1], element2)
+        matchedmask = (element1[idx] == element2)
+
+        maskelem1 = torch.ones_like(element1, dtype=torch.bool)
+        maskelem1[idx[matchedmask]] = 0
+        retelem1 = element1[maskelem1]
+    
+    return elem2spm(retelem1, adj1.sizes())
+
 
 def spmoverlap_notoverlap_(
         adj1: SparseTensor,
@@ -243,18 +279,18 @@ def de_plus_finder(adj, edges, mask_target=False):
     if mask_target:
         undirected_edges = torch.cat((edges, edges.flip(0)), dim=-1)
         target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj.sizes())
-        adj, _ = spmnotoverlap_(adj, target_adj)
+        adj = spmdiff_(adj, target_adj)
     # find 1,2 hops of target nodes
     l_1_1, l_1_not1, l_not1_1 = adjoverlap(adj[edges[0]], adj[edges[1]], calresadj=True) # not 1 == (dist=0) U dist(>=2)
     adj2_walks = adj @ adj
-    adj2_return, _  = spmnotoverlap_(adj2_walks, adj)
+    adj2_return  = spmdiff_(adj2_walks, adj)
 
-    _, l_2_not2, l_not2_2 = adjoverlap(adj2_return[edges[0]], adj2_return[edges[1]], calresadj=True) 
+    l_2_not2, l_not2_2 = spmnotoverlap_(adj2_return[edges[0]], adj2_return[edges[1]]) 
     # not 2 == (dist=1) U dist(>2)
     # not include dist=0 because adj2_return will return with dist=0
 
-    adj2, _ = spmnotoverlap_(adj2_return, SparseTensor.eye(adj.size(0), adj.size(1)).to(adj.device()))
-    l_2_2, _, _ = adjoverlap(adj2[edges[0]], adj2[edges[1]], calresadj=True)
+    adj2 = spmdiff_(adj2_return, SparseTensor.eye(adj.size(0), adj.size(1)).to(adj.device()))
+    l_2_2 = adjoverlap(adj2[edges[0]], adj2[edges[1]])
 
     l_1_2, l_1_not2, l_not1_2 = adjoverlap(adj[edges[0]], adj2[edges[1]], calresadj=True) # not also includes dist=0
     l_2_1, l_2_not1, l_not2_1 = adjoverlap(adj2[edges[0]], adj[edges[1]], calresadj=True)
@@ -265,8 +301,8 @@ def de_plus_finder(adj, edges, mask_target=False):
     l_0_0 = SparseTensor.from_edge_index(
         torch.stack([torch.arange(edges.size(1)).repeat_interleave(2).to(edges.device), edges.t().reshape(-1)]),
         sparse_sizes=(edges.size(1), adj.size(1)))
-    l_1_inf,_ = spmnotoverlap_(l_1_0inf, l_0_0)
-    l_inf_1,_ = spmnotoverlap_(l_0inf_1, l_0_0)
+    l_1_inf = spmdiff_(l_1_0inf, l_0_0)
+    l_inf_1 = spmdiff_(l_0inf_1, l_0_0)
 
     l_2_inf = adjoverlap(l_2_not2, l_2_not1)
     l_inf_2 = adjoverlap(l_not2_2, l_not1_2)

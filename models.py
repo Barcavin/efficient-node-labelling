@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
                                 global_add_pool, global_max_pool,
                                 global_mean_pool, global_sort_pool)
-from torch_sparse import SparseTensor
+from torch_sparse import SparseTensor, matmul
 
 from Conv import Sage_conv
 from node_label import de_plus_finder
