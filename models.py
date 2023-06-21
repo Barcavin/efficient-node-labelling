@@ -5,9 +5,10 @@ from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
                                 global_add_pool, global_max_pool,
                                 global_mean_pool, global_sort_pool)
 from torch_sparse import SparseTensor, matmul
+from torch_scatter import scatter_add
 
 from Conv import Sage_conv
-from node_label import de_plus_finder
+from node_label import de_plus_finder, propagation
 
 
 class MLP(nn.Module):
@@ -293,7 +294,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         if self.dgcnn: # TODO: if enable DGCNN, GNN encoding may require tanh as discussed in the paper
                        #       Check why dgcnn sometimes run OOM
             self.k = 45 # TODO: dynamic determine the number of nodes to be held for each target edge
-            total_latent_dim =  hidden_channels + in_channels
+            total_latent_dim =  5 + in_channels
             conv1d_channels = [16, 32]
             conv1d_kws = [total_latent_dim, 5]
             self.conv1 = nn.Conv1d(1, conv1d_channels[0], conv1d_kws[0],
@@ -304,7 +305,7 @@ class EfficientNodeLabelling(torch.nn.Module):
             dense_dim = int((self.k - 2) / 2 + 1)
             dense_dim = (dense_dim - conv1d_kws[1] + 1) * conv1d_channels[1]
         else:
-            dense_dim = hidden_channels + in_channels
+            dense_dim = 5 + in_channels
         self.lins = torch.nn.ModuleList()
         self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
         for _ in range(num_layers - 2):
@@ -330,34 +331,36 @@ class EfficientNodeLabelling(torch.nn.Module):
         
         l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, mask_target=self.mask_target)
         # concatenate the structural embedding
-        z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
-                       [(1,1)]*l_1_1.nnz()+
-                       [(1,2)]*l_1_2.nnz()+
-                       [(2,1)]*l_2_1.nnz()+
-                       [(1,3)]*l_1_inf.nnz()+
-                       [(3,1)]*l_inf_1.nnz()+
-                       [(2,2)]*l_2_2.nnz()+
-                       [(2,3)]*l_2_inf.nnz()+
-                       [(3,2)]*l_inf_2.nnz()).to(x.device)
-        z_emb = self.z_embedding(z).sum(dim=1)
-        batch, node_ids = torch.concat([get_node_ids(l_0_0),
-                                        get_node_ids(l_1_1),
-                                        get_node_ids(l_1_2),
-                                        get_node_ids(l_2_1),
-                                        get_node_ids(l_1_inf),
-                                        get_node_ids(l_inf_1),
-                                        get_node_ids(l_2_2),
-                                        get_node_ids(l_2_inf),
-                                        get_node_ids(l_inf_2)], dim=1)
-        x_all =  z_emb
+        # z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
+        #                [(1,1)]*l_1_1.nnz()+
+        #                [(1,2)]*l_1_2.nnz()+
+        #                [(2,1)]*l_2_1.nnz()+
+        #                [(1,3)]*l_1_inf.nnz()+
+        #                [(3,1)]*l_inf_1.nnz()+
+        #                [(2,2)]*l_2_2.nnz()+
+        #                [(2,3)]*l_2_inf.nnz()+
+        #                [(3,2)]*l_inf_2.nnz()).to(x.device)
+        # z_emb = self.z_embedding(z).sum(dim=1)
+        # batch, node_ids = torch.concat([get_node_ids(l_0_0),
+        #                                 get_node_ids(l_1_1),
+        #                                 get_node_ids(l_1_2),
+        #                                 get_node_ids(l_2_1),
+        #                                 get_node_ids(l_1_inf),
+        #                                 get_node_ids(l_inf_1),
+        #                                 get_node_ids(l_2_2),
+        #                                 get_node_ids(l_2_inf),
+        #                                 get_node_ids(l_inf_2)], dim=1)
+        # x_all =  z_emb
+        dim_size = edges.size(1)
+        c_1_1 = get_count(l_1_1, dim_size)
+        c_1_2 = get_count(l_1_2, dim_size) + get_count(l_2_1, dim_size)
+        c_1_inf = get_count(l_1_inf, dim_size) + get_count(l_inf_1, dim_size)
+        c_2_2 = get_count(l_2_2, dim_size)
+        c_2_inf = get_count(l_2_inf, dim_size) + get_count(l_inf_2, dim_size)
 
-        # x = x[node_ids]
-        # x = torch.cat([x, z_emb], dim=1)
-        
-        if self.dgcnn:
-            out = self.dgcnn_pooling(x_all, batch)
-        else:
-            out = global_mean_pool(x_all, batch)
+        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = propagation(edges, adj)
+
+        out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
         if self.use_feature:
             x_i = x[edges[0]]
             x_j = x[edges[1]]
@@ -383,7 +386,63 @@ class EfficientNodeLabelling(torch.nn.Module):
         return x
 
 
+class DotProductLabelling(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, num_layers,
+                 dropout, num_hops=2, use_feature=False):
+        super(DotProductLabelling, self).__init__()
+
+        self.dropout = dropout
+        self.num_hops = num_hops
+        self.use_feature = use_feature
+        if not self.use_feature:
+            in_channels = 0
+
+        dense_dim = 5 + in_channels
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, 1))
+
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+    
+    def forward(self, x, adj, edges):
+        """
+        Args:
+            x: [N, in_channels] node embedding after GNN
+            adj: [N, N] adjacency matrix
+            edges: [2, E] target edges
+        """
+        count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = propagation(edges, adj)
+
+        out = torch.stack([count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf], dim=1)
+        if self.use_feature:
+            x_i = x[edges[0]]
+            x_j = x[edges[1]]
+            x = torch.cat([x_i*x_j, out], dim=1)
+        else:
+            x = out
+        for lin in self.lins[:-1]:
+            x = lin(x)
+            x = F.relu(x)
+            hidden = x
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        logit = self.lins[-1](x)
+        return logit
+
+
+
+
+
 
 def get_node_ids(l:SparseTensor):
     row, col, _ = l.coo()
     return torch.stack([row, col], dim=0)
+
+def get_count(l:SparseTensor, dim_size:int):
+    row,col = get_node_ids(l)
+    count = scatter_add(torch.ones_like(row), row, dim_size=dim_size)
+    return count
