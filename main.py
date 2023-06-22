@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -243,6 +244,12 @@ def main():
     final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
     with open(final_log_path, 'w') as f:
         print(args, file=f)
+    
+    # Save command line input.
+    cmd_input = 'python ' + ' '.join(sys.argv) + '\n'
+    print('Command line input: ' + cmd_input + ' is saved.')
+    with open(final_log_path, 'a') as f:
+        f.write('\n' + cmd_input)
 
     if args.predictor in ['inner','mlp']:
         predictor = LinkPredictor(args.predictor, args.hidden_channels, args.hidden_channels, 1,
