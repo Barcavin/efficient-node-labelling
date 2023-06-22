@@ -33,6 +33,21 @@ def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=512):
     count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
     return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
 
+def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=512):
+    x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
+
+    one_hop_x = matmul(adj_t, x)
+    two_hop_x = matmul(adj_t, one_hop_x)
+    degree_one_hop = adj_t.sum(dim=1)
+
+    count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+    count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+    count_2_2 = ((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+
+
+    count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[0]] + one_hop_x[edges[1]] * two_hop_x[edges[1]]).sum(dim=-1)
+    return count_1_1, count_1_2, count_2_2, count_self_1_2
+
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
     '''

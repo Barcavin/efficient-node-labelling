@@ -178,7 +178,7 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP"])  ##inner/mlp
+    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP","DP+prop_only"])  ##inner/mlp
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
@@ -248,9 +248,9 @@ def main():
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
                                 args.num_layers, args.dropout, args.num_hops, dgcnn=args.dgcnn, use_feature=args.use_feature).to(device)
-    elif args.predictor == 'DP':
+    elif 'DP' in args.predictor:
         predictor = DotProductLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops, use_feature=args.use_feature).to(device)
+                                args.num_layers, args.dropout, args.num_hops, use_feature=args.use_feature, prop_only="prop_only" in args.predictor).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":
