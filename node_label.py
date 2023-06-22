@@ -12,7 +12,7 @@ from scipy.sparse.csgraph import shortest_path
 from torch_geometric.data import Data
 
 def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=512):
-    x = F.normalize(torch.nn.init.normal_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
+    x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
 
     one_hop_adj = adj_t
     one_and_two_hop_adj = adj_t @ adj_t
