@@ -202,6 +202,8 @@ def main():
     parser.add_argument('--print_summary', type=str, default='')
 
     args = parser.parse_args()
+    # start time
+    start_time = time.time()
     if args.mask_target and not args.use_sp_matrix:
         raise ValueError('mask_target can only be used when use_sp_matrix is True')
     if not args.print_summary:
@@ -360,7 +362,10 @@ def main():
         with open(final_log_path, 'a') as f:
             print(key,file=f)
             loggers[key].print_statistics(file=f)
-
+    # end time
+    end_time = time.time()
+    with open(final_log_path, 'a') as f:
+        print(f"Total time: {end_time - start_time:.4f}s", file=f)
 
 if __name__ == "__main__":
     main()
