@@ -11,14 +11,18 @@ import scipy.sparse as ssp
 from scipy.sparse.csgraph import shortest_path
 from torch_geometric.data import Data
 
-def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=512):
+def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=512, cached_two_hop_adj: SparseTensor=None):
     x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
 
     one_hop_adj = adj_t
-    one_and_two_hop_adj = adj_t @ adj_t
-    adj_t_with_self_loop = adj_t.fill_diag(1)
 
-    two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+    if cached_two_hop_adj is None:
+        one_and_two_hop_adj = adj_t @ adj_t
+        adj_t_with_self_loop = adj_t.fill_diag(1)
+        two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+    else:
+        two_hop_adj = cached_two_hop_adj
+
     degree_one_hop = adj_t.sum(dim=1)
     degree_two_hop = two_hop_adj.sum(dim=1)
 
@@ -31,9 +35,9 @@ def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=512):
 
     count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
     count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
-    return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
+    return (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), two_hop_adj
 
-def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=512):
+def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=512, cached_two_hop_adj: SparseTensor=None):
     x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
 
     one_hop_x = matmul(adj_t, x)
@@ -46,17 +50,21 @@ def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=512):
 
 
     count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[0]] + one_hop_x[edges[1]] * two_hop_x[edges[1]]).sum(dim=-1)
-    return count_1_1, count_1_2, count_2_2, count_self_1_2
+    return (count_1_1, count_1_2, count_2_2, count_self_1_2), None
 
 
-def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=512):
+def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=512, cached_two_hop_adj: SparseTensor=None):
     x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
 
     one_hop_adj = adj_t
-    one_and_two_hop_adj = adj_t @ adj_t
-    adj_t_with_self_loop = adj_t.fill_diag(1)
 
-    two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+    if cached_two_hop_adj is None:
+        one_and_two_hop_adj = adj_t @ adj_t
+        adj_t_with_self_loop = adj_t.fill_diag(1)
+        two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+    else:
+        two_hop_adj = cached_two_hop_adj
+    
     degree_one_hop = adj_t.sum(dim=1)
     degree_two_hop = two_hop_adj.sum(dim=1)
 
@@ -78,7 +86,7 @@ def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=512):
 
     count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x_prop[edges[0]] + one_hop_x[edges[1]] * two_hop_x_prop[edges[1]]).sum(dim=-1)
 
-    return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
+    return (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2), two_hop_adj
 
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
@@ -333,21 +341,27 @@ def adjoverlap(adj1: SparseTensor,
             adjoverlap = sparsesample_reweight(adjoverlap, cnsampledeg)
     return adjoverlap
 
-def de_plus_finder(adj, edges, mask_target=False):
+def de_plus_finder(adj, edges, mask_target=False, cached_adj2_return=None, cached_adj2=None):
     if mask_target:
         undirected_edges = torch.cat((edges, edges.flip(0)), dim=-1)
         target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj.sizes())
         adj = spmdiff_(adj, target_adj)
     # find 1,2 hops of target nodes
     l_1_1, l_1_not1, l_not1_1 = adjoverlap(adj[edges[0]], adj[edges[1]], calresadj=True) # not 1 == (dist=0) U dist(>=2)
-    adj2_walks = adj @ adj
-    adj2_return  = spmdiff_(adj2_walks, adj)
+    if cached_adj2_return is None:
+        adj2_walks = adj @ adj
+        adj2_return  = spmdiff_(adj2_walks, adj)
+    else:
+        adj2_return = cached_adj2_return
 
     l_2_not2, l_not2_2 = spmnotoverlap_(adj2_return[edges[0]], adj2_return[edges[1]]) 
     # not 2 == (dist=1) U dist(>2)
     # not include dist=0 because adj2_return will return with dist=0
 
-    adj2 = spmdiff_(adj2_return, SparseTensor.eye(adj.size(0), adj.size(1)).to(adj.device()))
+    if cached_adj2 is None:
+        adj2 = spmdiff_(adj2_return, SparseTensor.eye(adj.size(0), adj.size(1)).to(adj.device()))
+    else:
+        adj2 = cached_adj2
     l_2_2 = adjoverlap(adj2[edges[0]], adj2[edges[1]])
 
     l_1_2, l_1_not2, l_not1_2 = adjoverlap(adj[edges[0]], adj2[edges[1]], calresadj=True) # not also includes dist=0
@@ -365,7 +379,7 @@ def de_plus_finder(adj, edges, mask_target=False):
     l_2_inf = adjoverlap(l_2_not2, l_2_not1)
     l_inf_2 = adjoverlap(l_not2_2, l_not1_2)
 
-    return l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2
+    return (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2)
 
 
 def isSymmetric(mat):

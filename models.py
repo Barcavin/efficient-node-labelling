@@ -312,6 +312,9 @@ class EfficientNodeLabelling(torch.nn.Module):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
 
+        self.cached_adj2_return = None
+        self.cached_adj2 = None
+
 
     def reset_parameters(self):
         for lin in self.lins:
@@ -328,8 +331,16 @@ class EfficientNodeLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
+        if self.training:
+            (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), _ = de_plus_finder(adj, edges, mask_target=self.mask_target)
+        else: # during testing we can cache the adj2
+            if self.cached_adj2_return is None:
+                (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2) = de_plus_finder(adj, edges, cached_adj2_return=None, cached_adj2=None)
+                self.cached_adj2_return = adj2_return
+                self.cached_adj2 = adj2
+            else:
+                (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2) = de_plus_finder(adj, edges, cached_adj2_return=self.cached_adj2_return, cached_adj2=self.cached_adj2)
         
-        l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, mask_target=self.mask_target)
         # concatenate the structural embedding
         # z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
         #                [(1,1)]*l_1_1.nnz()+
@@ -413,6 +424,7 @@ class DotProductLabelling(torch.nn.Module):
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
+        self.cached_two_hop_adj=None
 
 
     def reset_parameters(self):
@@ -426,7 +438,13 @@ class DotProductLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
-        propped = self.prop_func(edges, adj)
+        if self.training:
+            propped, _ = self.prop_func(edges, adj)
+        else:
+            if self.cached_two_hop_adj is None:
+                propped, self.cached_two_hop_adj = self.prop_func(edges, adj, cached_two_hop_adj=None)
+            else:
+                propped, _ = self.prop_func(edges, adj, cached_two_hop_adj=self.cached_two_hop_adj)
         out = torch.stack([*propped], dim=1)
 
         if self.use_feature:
