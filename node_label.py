@@ -49,6 +49,38 @@ def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=512):
     return count_1_1, count_1_2, count_2_2, count_self_1_2
 
 
+def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=512):
+    x = F.normalize(torch.nn.init.uniform_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
+
+    one_hop_adj = adj_t
+    one_and_two_hop_adj = adj_t @ adj_t
+    adj_t_with_self_loop = adj_t.fill_diag(1)
+
+    two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
+    degree_one_hop = adj_t.sum(dim=1)
+    degree_two_hop = two_hop_adj.sum(dim=1)
+
+    one_hop_x = matmul(one_hop_adj, x)
+    two_hop_x = matmul(two_hop_adj, x)
+
+    count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+    count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+    count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
+
+    count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
+    count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
+
+    two_hop_x_prop = matmul(adj_t, one_hop_x)
+
+    count_1_2_only = (one_hop_x[edges[0]] * two_hop_x_prop[edges[1]]).sum(dim=-1) + (two_hop_x_prop[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+    count_2_2_only = ((two_hop_x_prop[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x_prop[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+
+
+    count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x_prop[edges[0]] + one_hop_x[edges[1]] * two_hop_x_prop[edges[1]]).sum(dim=-1)
+
+    return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
+
+
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
     '''
     sampling elements from a adjacency matrix

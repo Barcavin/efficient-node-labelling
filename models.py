@@ -8,7 +8,7 @@ from torch_sparse import SparseTensor, matmul
 from torch_scatter import scatter_add
 
 from Conv import Sage_conv
-from node_label import de_plus_finder, propagation, propagation_only
+from node_label import de_plus_finder, propagation, propagation_only, propagation_combine
 
 
 class MLP(nn.Module):
@@ -388,17 +388,22 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, use_feature=False, prop_only=False):
+                 dropout, num_hops=2, use_feature=False, prop_type='exact'):
         super(DotProductLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
         self.use_feature = use_feature
-        self.prop_only = prop_only
-        if self.prop_only:
+        self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
+        if self.prop_type == 'prop_only':
             struct_dim = 4
-        else:
+            self.prop_func = propagation_only
+        elif self.prop_type == 'exact':
             struct_dim = 5
+            self.prop_func = propagation
+        elif self.prop_type == 'combine':
+            struct_dim = 8
+            self.prop_func = propagation_combine
         if not self.use_feature:
             in_channels = 0
 
@@ -421,12 +426,8 @@ class DotProductLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
-        if self.prop_only:
-            count_1_1, count_1_2, count_2_2, count_self_1_2 = propagation_only(edges, adj)
-            out = torch.stack([count_1_1, count_1_2, count_2_2, count_self_1_2], dim=1)
-        else:
-            count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = propagation(edges, adj)
-            out = torch.stack([count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf], dim=1)
+        propped = self.prop_func(edges, adj)
+        out = torch.stack([*propped], dim=1)
 
         if self.use_feature:
             x_i = x[edges[0]]
