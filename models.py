@@ -369,7 +369,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         c_2_2 = get_count(l_2_2, dim_size)
         c_2_inf = get_count(l_2_inf, dim_size) + get_count(l_inf_2, dim_size)
 
-        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = propagation(edges, adj)
+        (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), _ = propagation(edges, adj)
 
         out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
         if self.use_feature:
