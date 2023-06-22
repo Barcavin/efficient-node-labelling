@@ -184,6 +184,7 @@ def main():
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--use_sp_matrix', type=str2bool, default='True', help='use sparse matrix for adjacency matrix')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
+    parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -260,7 +261,8 @@ def main():
     elif 'DP' in args.predictor:
         prop_type = args.predictor.split("+")[1]
         predictor = DotProductLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops, use_feature=args.use_feature, prop_type=prop_type).to(device)
+                                args.num_layers, args.dropout, args.num_hops, 
+                                use_feature=args.use_feature, prop_type=prop_type, torchhd_style=args.torchhd_style).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     if args.dataset != "collab" and args.dataset != "ppa":

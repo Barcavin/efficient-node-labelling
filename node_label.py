@@ -14,16 +14,18 @@ from torch_geometric.data import Data
 
 import torchhd
 
-def get_random_node_vectors(num_nodes: int, dimensions: int, device=None) -> Tensor:
-    scale = math.sqrt(1 / dimensions)
+def get_random_node_vectors(num_nodes: int, dimensions: int, device=None, torchhd_style=True) -> Tensor:
+    if torchhd_style:
+        scale = math.sqrt(1 / dimensions)
 
-    node_vectors = torchhd.random(num_nodes, dimensions, device=device)
-    node_vectors.mul_(scale)  # make them unit vectors
+        node_vectors = torchhd.random(num_nodes, dimensions, device=device)
+        node_vectors.mul_(scale)  # make them unit vectors
+    else:
+        node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes, dimensions), dtype=torch.float32, device=device)))
     return node_vectors
 
-def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None):
-    # x_2 = F.normalize(torch.nn.init.normal_(torch.empty((adj_t.size(0), dim), dtype=torch.float32, device=adj_t.device())))
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device())
+def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
+    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
     one_hop_adj = adj_t
 
     if cached_two_hop_adj is None:
@@ -47,8 +49,8 @@ def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_ho
     count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
     return (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), two_hop_adj
 
-def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None):
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device())
+def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
+    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
 
     one_hop_x = matmul(adj_t, x)
     two_hop_x = matmul(adj_t, one_hop_x)
@@ -63,8 +65,8 @@ def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_t
     return (count_1_1, count_1_2, count_2_2, count_self_1_2), None
 
 
-def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None):
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device())
+def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
+    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
 
     one_hop_adj = adj_t
 
