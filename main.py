@@ -84,18 +84,21 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
 
 
 @torch.no_grad()
-def test(encoder, predictor, data, split_edge, evaluator, batch_size, encoder_name, dataset, use_sp_matrix):
+def test(encoder, predictor, data, split_edge, evaluator, 
+         batch_size, encoder_name, dataset, use_sp_matrix, use_valedges_as_input):
     encoder.eval()
     predictor.eval()
+    if use_valedges_as_input:
+        adj_t = data.full_adj_t
 
     if encoder_name == 'mlp' or isinstance(encoder, nn.Identity):
         h = encoder(create_input(data))
     elif use_sp_matrix:
-        h = encoder(create_input(data), data.adj_t)
+        h = encoder(create_input(data), adj_t)
     else:
         h = encoder(create_input(data), data.edge_index)
 
-    pos_train_edge = split_edge['train']['edge'].to(h.device)
+    # pos_train_edge = split_edge['train']['edge'].to(h.device)
     pos_valid_edge = split_edge['valid']['edge'].to(h.device)
     neg_valid_edge = split_edge['valid']['edge_neg'].to(h.device)
     pos_test_edge = split_edge['test']['edge'].to(h.device)
@@ -104,27 +107,27 @@ def test(encoder, predictor, data, split_edge, evaluator, batch_size, encoder_na
     pos_valid_preds = []
     for perm in DataLoader(range(pos_valid_edge.size(0)), batch_size):
         edge = pos_valid_edge[perm].t()
-        out = predictor(h, data.adj_t, edge)
+        out = predictor(h, adj_t, edge)
         pos_valid_preds += [out.squeeze().cpu()]
     pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
 
     neg_valid_preds = []
     for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
         edge = neg_valid_edge[perm].t()
-        neg_valid_preds += [predictor(h, data.adj_t, edge).squeeze().cpu()]
+        neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
 
     pos_test_preds = []
     for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
         edge = pos_test_edge[perm].t()
-        out = predictor(h, data.adj_t, edge)
+        out = predictor(h, adj_t, edge)
         pos_test_preds += [out.squeeze().cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
-        neg_test_preds += [predictor(h, data.adj_t, edge).squeeze().cpu()]
+        neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
     
     results = {}
@@ -160,6 +163,7 @@ def main():
     parser.add_argument('--val_ratio', type=float, default=0.1)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--dataset_dir', type=str, default='./data')
+    parser.add_argument('--use_valedges_as_input', type=str2bool, default='False', help='whether to use val edges as input')
 
     # model setting
     parser.add_argument('--encoder', type=str, default='gcn')
@@ -225,10 +229,15 @@ def main():
         input_size = data.num_features
         if args.use_sp_matrix:
             data = T.ToSparseTensor(remove_edge_index=False)(data)
-        # args.metric = 'Hits@50'
-        ##add training edges into message passing
-        # data.adj_t = torch.cat((edge_index, split_edge['train']['edge'].t()), dim=1)
-        # split_edge['train']['edge'] = data.adj_t.t()
+        # Use training + validation edges for inference on test set.
+        if args.use_valedges_as_input:
+            val_edge_index = split_edge['valid']['edge'].t()
+            full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+            data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
+                                                    sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
+            data.full_adj_t = data.full_adj_t.to_symmetric()
+        else:
+            data.full_adj_t = data.adj_t
 
     else:
         dataset = get_dataset(args.dataset_dir, args.dataset)
@@ -251,12 +260,14 @@ def main():
                                 args.num_layers, args.dropout).to(device)
     elif args.predictor == 'ENL':
         predictor = EfficientNodeLabelling(args.hidden_channels, args.hidden_channels,
-                                args.num_layers, args.dropout, args.num_hops, dgcnn=args.dgcnn, use_feature=args.use_feature).to(device)
+                                args.num_layers, args.dropout, args.num_hops, 
+                                dgcnn=args.dgcnn, use_feature=args.use_feature).to(device)
     elif 'DP' in args.predictor:
         prop_type = args.predictor.split("+")[1]
         predictor = DotProductLabelling(args.hidden_channels, args.hidden_channels,
                                 args.num_layers, args.dropout, args.num_hops, 
-                                use_feature=args.use_feature, prop_type=prop_type, torchhd_style=args.torchhd_style).to(device)
+                                use_feature=args.use_feature, prop_type=prop_type, 
+                                torchhd_style=args.torchhd_style).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
     loggers = {
@@ -273,6 +284,15 @@ def main():
             data, split_edge = get_data_split(args.dataset_dir, args.dataset, args.val_ratio, args.test_ratio, run=run)
             if args.use_sp_matrix:
                 data = T.ToSparseTensor(remove_edge_index=False)(data)
+            # Use training + validation edges for inference on test set.
+            if args.use_valedges_as_input:
+                val_edge_index = split_edge['valid']['edge'].t()
+                full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+                data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
+                                                        sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
+                data.full_adj_t = data.full_adj_t.to_symmetric()
+            else:
+                data.full_adj_t = data.adj_t
             if args.data_split_only:
                 if run == args.runs - 1:
                     exit(0)
@@ -300,7 +320,8 @@ def main():
                         args.hidden_channels, 1,
                         args.dropout).to(device)
         elif args.encoder == 'mlp':
-            encoder = MLP(args.num_layers, input_size, args.hidden_channels, args.hidden_channels, args.dropout).to(device)
+            encoder = MLP(args.num_layers, input_size, 
+                          args.hidden_channels, args.hidden_channels, args.dropout).to(device)
 
         if args.use_feature:
             encoder.reset_parameters()
@@ -319,7 +340,8 @@ def main():
                          args.use_sp_matrix, args.mask_target)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.encoder, args.dataset, args.use_sp_matrix)
+                            evaluator, args.batch_size, args.encoder, args.dataset, 
+                            args.use_sp_matrix, args.use_valedges_as_input)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
