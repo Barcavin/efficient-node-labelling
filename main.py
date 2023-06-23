@@ -22,7 +22,7 @@ from logger import Logger
 from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling, DotProductLabelling
 from node_label import spmdiff_
 from utils import ( get_dataset, data_summary, initialize, create_input,
-                   set_random_seeds, str2bool, get_data_split, make_edge_index)
+                   set_random_seeds, str2bool, get_data_split, filter_by_year)
 
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_name, 
@@ -164,6 +164,7 @@ def main():
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--dataset_dir', type=str, default='./data')
     parser.add_argument('--use_valedges_as_input', type=str2bool, default='False', help='whether to use val edges as input')
+    parser.add_argument('--year', type=int, default=-1)
 
     # model setting
     parser.add_argument('--encoder', type=str, default='gcn')
@@ -220,6 +221,8 @@ def main():
             data.edge_weight = data.edge_weight.view(-1).to(torch.float)
 
         split_edge = dataset.get_edge_split()
+        if args.dataset == 'ogbl-collab' and args.year > 0:  # filter out training edges before args.year
+            data, split_edge = filter_by_year(data, split_edge, args.year)
         print("-"*20)
         print(f"train: {split_edge['train']['edge'].shape[0]}")
         print(f"{split_edge['train']['edge'][:10,:]}")

@@ -208,4 +208,27 @@ def create_input(data):
     else:
         x = data.x
     return x
+
+
+# adopted from "https://github.com/melifluos/subgraph-sketching/tree/main"
+def filter_by_year(data, split_edge, year):
+    """
+    remove edges before year from data and split edge
+    @param data: pyg Data, pyg SplitEdge
+    @param split_edges:
+    @param year: int first year to use
+    @return: pyg Data, pyg SplitEdge
+    """
+    selected_year_index = torch.reshape(
+        (split_edge['train']['year'] >= year).nonzero(as_tuple=False), (-1,))
+    split_edge['train']['edge'] = split_edge['train']['edge'][selected_year_index]
+    split_edge['train']['weight'] = split_edge['train']['weight'][selected_year_index]
+    split_edge['train']['year'] = split_edge['train']['year'][selected_year_index]
+    train_edge_index = split_edge['train']['edge'].t()
+    # create adjacency matrix
+    new_edges = to_undirected(train_edge_index, split_edge['train']['weight'], reduce='add')
+    new_edge_index, new_edge_weight = new_edges[0], new_edges[1]
+    data.edge_index = new_edge_index
+    data.edge_weight = new_edge_weight.unsqueeze(-1)
+    return data, split_edge
     

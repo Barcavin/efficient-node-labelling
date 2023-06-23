@@ -303,9 +303,9 @@ def spmdiff_(adj1: SparseTensor,
         maskelem1 = torch.ones_like(element1, dtype=torch.bool)
         maskelem1[idx[matchedmask]] = 0
         retelem1 = element1[maskelem1]
-        retval1 = val1[maskelem1]
     
-    if keep_val:
+    if keep_val and val1 is not None:
+        retval1 = val1[maskelem1]
         return elem2spm(retelem1, adj1.sizes(), retval1)
     else:
         return elem2spm(retelem1, adj1.sizes())
