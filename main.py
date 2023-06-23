@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from logger import Logger
 from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling, DotProductLabelling
-from node_label import spmnotoverlap_
+from node_label import spmdiff_
 from utils import ( get_dataset, data_summary, initialize, create_input,
                    set_random_seeds, str2bool, get_data_split, make_edge_index)
 
@@ -29,9 +29,9 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
           dataset, use_sp_matrix, mask_target):
     encoder.train()
     predictor.train()
-
+    device = create_input(data).device
     criterion = BCEWithLogitsLoss(reduction='mean')
-    pos_train_edge = split_edge['train']['edge'].to(create_input(data).device)
+    pos_train_edge = split_edge['train']['edge'].to(device)
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
@@ -44,7 +44,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
             adj_t = data.adj_t
             undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
             target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
-            adj_t, _ = spmnotoverlap_(adj_t, target_adj)
+            adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
         else:
             adj_t = data.adj_t
 
@@ -57,15 +57,15 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
             h = encoder(create_input(data), data.edge_index)
 
 
-        if dataset != "collab" and dataset != "ppa":
-            neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
-                                 num_neg_samples=perm.size(0), method='dense')
-        elif dataset == "collab" or dataset == "ppa":
-            neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
-                             device=create_input(data).device)
+        # if dataset != "collab" and dataset != "ppa":
+        neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
+                                num_neg_samples=perm.size(0), method='sparse')
+        # elif dataset == "collab" or dataset == "ppa":
+        #     neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
+        #                      device=device)
 
         train_edges = torch.cat((edge, neg_edge), dim=-1)
-        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(create_input(data).device)
+        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
         out = predictor(h, adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
@@ -127,32 +127,19 @@ def test(encoder, predictor, data, split_edge, evaluator, batch_size, encoder_na
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
     
     results = {}
-    if dataset != "collab" and dataset != "ppa":
-        for K in [10, 20, 50, 100]:
-            evaluator.K = K
-            valid_hits = evaluator.eval({
-                'y_pred_pos': pos_valid_pred,
-                'y_pred_neg': neg_valid_pred,
-            })[f'hits@{K}']
-            test_hits = evaluator.eval({
-                'y_pred_pos': pos_test_pred,
-                'y_pred_neg': neg_test_pred,
-            })[f'hits@{K}']
+    for K in [10, 20, 50, 100]:
+        evaluator.K = K
+        valid_hits = evaluator.eval({
+            'y_pred_pos': pos_valid_pred,
+            'y_pred_neg': neg_valid_pred,
+        })[f'hits@{K}']
+        test_hits = evaluator.eval({
+            'y_pred_pos': pos_test_pred,
+            'y_pred_neg': neg_test_pred,
+        })[f'hits@{K}']
 
-            results[f'Hits@{K}'] = (valid_hits, test_hits)
-    elif dataset == "collab" or dataset == "ppa":
-        for K in [10, 50, 100]:
-            evaluator.K = K
-            valid_hits = evaluator.eval({
-                'y_pred_pos': pos_valid_pred,
-                'y_pred_neg': neg_valid_pred,
-            })[f'hits@{K}']
-            test_hits = evaluator.eval({
-                'y_pred_pos': pos_test_pred,
-                'y_pred_neg': neg_test_pred,
-            })[f'hits@{K}']
+        results[f'Hits@{K}'] = (valid_hits, test_hits)
 
-            results[f'Hits@{K}'] = (valid_hits, test_hits)
 
     valid_result = torch.cat((torch.ones(pos_valid_pred.size()), torch.zeros(neg_valid_pred.size())), dim=0)
     valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
@@ -216,13 +203,16 @@ def main():
     device = torch.device(device)
 
     # if args.dataset == "cora" or args.dataset == "citeseer" or args.dataset == "pubmed":
-    if args.dataset != "collab" and args.dataset != "ppa":
-        dataset = get_dataset(args.dataset_dir, args.dataset)
+    if args.dataset.startswith('ogbl-'):
+        dataset = PygLinkPropPredDataset(name=args.dataset, root=args.dataset_dir)
         data = dataset[0]
-
-    elif args.dataset == "collab" or args.dataset == "ppa":
-        dataset = PygLinkPropPredDataset(name=('ogbl-' + args.dataset), root=args.dataset_dir)
-        data = dataset[0]
+        """
+            SparseTensor's value is NxNx1 for collab. due to edge_weight is |E|x1
+            NeuralNeighborCompletion just set edge_weight=None
+            ELPH use edge_weight
+        """
+        if 'edge_weight' in data:
+            data.edge_weight = data.edge_weight.view(-1).to(torch.float)
 
         split_edge = dataset.get_edge_split()
         print("-"*20)
@@ -231,7 +221,6 @@ def main():
         print(f"valid: {split_edge['valid']['edge'].shape[0]}")
         print(f"test: {split_edge['test']['edge'].shape[0]}")
         print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
-        data.edge_index = make_edge_index(split_edge["train"]["edge"])
         input_size = data.num_features
         if args.use_sp_matrix:
             data = T.ToSparseTensor(remove_edge_index=False)(data)
@@ -239,6 +228,10 @@ def main():
         ##add training edges into message passing
         # data.adj_t = torch.cat((edge_index, split_edge['train']['edge'].t()), dim=1)
         # split_edge['train']['edge'] = data.adj_t.t()
+
+    else:
+        dataset = get_dataset(args.dataset_dir, args.dataset)
+        data = dataset[0]
 
     if args.print_summary:
         data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
@@ -265,25 +258,17 @@ def main():
                                 use_feature=args.use_feature, prop_type=prop_type, torchhd_style=args.torchhd_style).to(device)
 
     evaluator = Evaluator(name='ogbl-ddi')
-    if args.dataset != "collab" and args.dataset != "ppa":
-        loggers = {
-            'Hits@10': Logger(args.runs, args),
-            'Hits@20': Logger(args.runs, args),
-            'Hits@50': Logger(args.runs, args),
-            'Hits@100': Logger(args.runs, args),
-            'AUC': Logger(args.runs, args),
-        }
-    elif args.dataset == "collab" or args.dataset == "ppa":
-        loggers = {
-            'Hits@10': Logger(args.runs, args),
-            'Hits@50': Logger(args.runs, args),
-            'Hits@100': Logger(args.runs, args),
-            'AUC': Logger(args.runs, args),
-        }
+    loggers = {
+        'Hits@10': Logger(args.runs, args),
+        'Hits@20': Logger(args.runs, args),
+        'Hits@50': Logger(args.runs, args),
+        'Hits@100': Logger(args.runs, args),
+        'AUC': Logger(args.runs, args),
+    }
 
     val_max = 0.0
     for run in range(args.runs):
-        if args.dataset != "collab" and args.dataset != "ppa":
+        if not args.dataset.startswith('ogbl-'):
             data, split_edge = get_data_split(args.dataset_dir, args.dataset, args.val_ratio, args.test_ratio, run=run)
             if args.use_sp_matrix:
                 data = T.ToSparseTensor(remove_edge_index=False)(data)

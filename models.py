@@ -278,12 +278,11 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, mask_target=False, dgcnn=False, use_feature=False):
+                 dropout, num_hops=2, dgcnn=False, use_feature=False):
         super(EfficientNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
-        self.mask_target = mask_target
         self.dgcnn = dgcnn
         self.use_feature = use_feature
         if not self.use_feature:
@@ -332,7 +331,7 @@ class EfficientNodeLabelling(torch.nn.Module):
             edges: [2, E] target edges
         """
         if self.training:
-            (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), _ = de_plus_finder(adj, edges, mask_target=self.mask_target)
+            (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), _ = de_plus_finder(adj, edges)
         else: # during testing we can cache the adj2
             if self.cached_adj2_return is None:
                 (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2) = de_plus_finder(adj, edges, cached_adj2_return=None, cached_adj2=None)

@@ -26,14 +26,16 @@ def get_random_node_vectors(num_nodes: int, dimensions: int, device=None, torchh
 
 def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
     x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
-    one_hop_adj = adj_t
 
     if cached_two_hop_adj is None:
+        # computing and caching
+        adj_t = adj_t.fill_value_(1.0)
         one_and_two_hop_adj = adj_t @ adj_t
         adj_t_with_self_loop = adj_t.fill_diag(1)
         two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
     else:
         two_hop_adj = cached_two_hop_adj
+    one_hop_adj = adj_t
 
     degree_one_hop = adj_t.sum(dim=1)
     degree_two_hop = two_hop_adj.sum(dim=1)
@@ -68,14 +70,15 @@ def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_t
 def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
     x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
 
-    one_hop_adj = adj_t
-
     if cached_two_hop_adj is None:
+        # caching
+        adj_t = adj_t.fill_value_(1.0)
         one_and_two_hop_adj = adj_t @ adj_t
         adj_t_with_self_loop = adj_t.fill_diag(1)
         two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
     else:
         two_hop_adj = cached_two_hop_adj
+    one_hop_adj = adj_t
     
     degree_one_hop = adj_t.sum(dim=1)
     degree_two_hop = two_hop_adj.sum(dim=1)
@@ -201,12 +204,17 @@ def sparsesample_reweight(adj: SparseTensor, deg: int) -> SparseTensor:
     return ret
 
 
-def elem2spm(element: Tensor, sizes: List[int]) -> SparseTensor:
+def elem2spm(element: Tensor, sizes: List[int], val: Tensor=None) -> SparseTensor:
     # Convert adjacency matrix to a 1-d vector
     col = torch.bitwise_and(element, 0xffffffff)
     row = torch.bitwise_right_shift(element, 32)
-    return SparseTensor(row=row, col=col, sparse_sizes=sizes).to_device(
-        element.device).fill_value_(1.0)
+    if val is None:
+        sp_tensor =  SparseTensor(row=row, col=col, sparse_sizes=sizes).to_device(
+            element.device).fill_value_(1.0)
+    else:
+        sp_tensor =  SparseTensor(row=row, col=col, value=val, sparse_sizes=sizes).to_device(
+            element.device)
+    return sp_tensor
 
 
 def spm2elem(spm: SparseTensor) -> Tensor:
@@ -214,9 +222,10 @@ def spm2elem(spm: SparseTensor) -> Tensor:
     sizes = spm.sizes()
     elem = torch.bitwise_left_shift(spm.storage.row(),
                                     32).add_(spm.storage.col())
+    val = spm.storage.value()
     #elem = spm.storage.row()*sizes[-1] + spm.storage.col()
     #assert torch.all(torch.diff(elem) > 0)
-    return elem
+    return elem, val
 
 
 def spmoverlap_(adj1: SparseTensor, adj2: SparseTensor) -> SparseTensor:
@@ -224,8 +233,8 @@ def spmoverlap_(adj1: SparseTensor, adj2: SparseTensor) -> SparseTensor:
     Compute the overlap of neighbors (rows in adj). The returned matrix is similar to the hadamard product of adj1 and adj2
     '''
     assert adj1.sizes() == adj2.sizes()
-    element1 = spm2elem(adj1)
-    element2 = spm2elem(adj2)
+    element1, val1 = spm2elem(adj1)
+    element2, val2 = spm2elem(adj2)
 
     if element2.shape[0] > element1.shape[0]:
         element1, element2 = element2, element1
@@ -256,8 +265,8 @@ def spmnotoverlap_(adj1: SparseTensor,
     # assert adj1.sizes() == adj2.sizes()
 
     
-    element1 = spm2elem(adj1)
-    element2 = spm2elem(adj2)
+    element1, val1 = spm2elem(adj1)
+    element2, val2 = spm2elem(adj2)
 
     if element1.shape[0] == 0:
         retelem1 = element1
@@ -274,15 +283,15 @@ def spmnotoverlap_(adj1: SparseTensor,
     return elem2spm(retelem1, adj1.sizes()), elem2spm(retelem2, adj2.sizes())
 
 def spmdiff_(adj1: SparseTensor,
-                   adj2: SparseTensor) -> Tuple[SparseTensor, SparseTensor]:
+                   adj2: SparseTensor, keep_val=False) -> Tuple[SparseTensor, SparseTensor]:
     '''
     return elements in adj1 but not in adj2 and in adj2 but not adj1
     '''
     # assert adj1.sizes() == adj2.sizes()
 
     
-    element1 = spm2elem(adj1)
-    element2 = spm2elem(adj2)
+    element1, val1 = spm2elem(adj1)
+    element2, val2 = spm2elem(adj2)
 
     if element1.shape[0] == 0:
         retelem1 = element1
@@ -294,8 +303,13 @@ def spmdiff_(adj1: SparseTensor,
         maskelem1 = torch.ones_like(element1, dtype=torch.bool)
         maskelem1[idx[matchedmask]] = 0
         retelem1 = element1[maskelem1]
+        retval1 = val1[maskelem1]
     
-    return elem2spm(retelem1, adj1.sizes())
+    if keep_val:
+        return elem2spm(retelem1, adj1.sizes(), retval1)
+    else:
+        return elem2spm(retelem1, adj1.sizes())
+
 
 
 def spmoverlap_notoverlap_(
@@ -305,8 +319,8 @@ def spmoverlap_notoverlap_(
     return elements in adj1 but not in adj2 and in adj2 but not adj1
     '''
     # assert adj1.sizes() == adj2.sizes()
-    element1 = spm2elem(adj1)
-    element2 = spm2elem(adj2)
+    element1, val1 = spm2elem(adj1)
+    element2, val2 = spm2elem(adj2)
 
     if element1.shape[0] == 0:
         retoverlap = element1
@@ -353,11 +367,11 @@ def adjoverlap(adj1: SparseTensor,
             adjoverlap = sparsesample_reweight(adjoverlap, cnsampledeg)
     return adjoverlap
 
-def de_plus_finder(adj, edges, mask_target=False, cached_adj2_return=None, cached_adj2=None):
-    if mask_target:
-        undirected_edges = torch.cat((edges, edges.flip(0)), dim=-1)
-        target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj.sizes())
-        adj = spmdiff_(adj, target_adj)
+def de_plus_finder(adj, edges, cached_adj2_return=None, cached_adj2=None):
+    # if mask_target:
+    #     undirected_edges = torch.cat((edges, edges.flip(0)), dim=-1)
+    #     target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj.sizes())
+    #     adj = spmdiff_(adj, target_adj)
     # find 1,2 hops of target nodes
     l_1_1, l_1_not1, l_not1_1 = adjoverlap(adj[edges[0]], adj[edges[1]], calresadj=True) # not 1 == (dist=0) U dist(>=2)
     if cached_adj2_return is None:
