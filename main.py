@@ -35,6 +35,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
+    neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
@@ -58,12 +59,12 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size, encoder_n
 
 
         # if dataset != "collab" and dataset != "ppa":
-        neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
-                                num_neg_samples=perm.size(0), method='sparse')
+        # neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
+        #                         num_neg_samples=perm.size(0), method='sparse')
         # elif dataset == "collab" or dataset == "ppa":
         #     neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
         #                      device=device)
-
+        neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
         out = predictor(h, adj_t, train_edges).squeeze()
