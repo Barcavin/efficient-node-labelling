@@ -287,8 +287,6 @@ def main():
         encoder.reset_parameters()
         predictor.reset_parameters()
         parameters = list(encoder.parameters()) + list(predictor.parameters())
-        if args.use_embedding:
-            parameters += list(emb.parameters())
         optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
 
         cnt_wait = 0

@@ -68,11 +68,14 @@ class GCN(torch.nn.Module):
 
         self.use_feature = use_feature
         self.embedding = embedding
+        self.dropout = dropout
         self.input_size = 0
         if self.use_feature:
             self.input_size += in_channels
+            self.feat_encode = get_encoder(in_channels, self.dropout)
         if self.embedding is not None:
             self.input_size += embedding.embedding_dim
+            self.embedding_encode = get_encoder(embedding.embedding_dim, self.dropout)
         self.convs = torch.nn.ModuleList()
         
         if self.input_size > 0:
@@ -82,7 +85,6 @@ class GCN(torch.nn.Module):
                     GCNConv(hidden_channels, hidden_channels, cached=False))
             self.convs.append(GCNConv(hidden_channels, out_channels, cached=False))
 
-        self.dropout = dropout
 
     def reset_parameters(self):
         for conv in self.convs:
@@ -90,14 +92,12 @@ class GCN(torch.nn.Module):
 
     def forward(self, x, adj_t):
         if self.input_size > 0:
-            if self.use_feature and self.embedding is not None:
-                x = torch.cat([x, self.embedding.weight], dim=1)
-            elif self.use_feature:
-                x = x
-            elif self.embedding is not None:
-                x = self.embedding.weight
-            else:
-                raise ValueError("No input features or embedding is provided")
+            xs = []
+            if self.use_feature:
+                xs.append(self.feat_encode(x))
+            if self.embedding is not None:
+                xs.append(self.embedding_encode(self.embedding.weight))
+            x = torch.cat(xs, dim=1)
             for conv in self.convs[:-1]:
                 x = conv(x, adj_t)
                 x = F.relu(x)
@@ -309,7 +309,8 @@ class EfficientNodeLabelling(torch.nn.Module):
         if self.dgcnn: # TODO: if enable DGCNN, GNN encoding may require tanh as discussed in the paper
                        #       Check why dgcnn sometimes run OOM
             self.k = 45 # TODO: dynamic determine the number of nodes to be held for each target edge
-            total_latent_dim =  5 + in_channels
+            self.struct_dim = 5
+            total_latent_dim =  self.struct_dim + in_channels
             conv1d_channels = [16, 32]
             conv1d_kws = [total_latent_dim, 5]
             self.conv1 = nn.Conv1d(1, conv1d_channels[0], conv1d_kws[0],
@@ -320,13 +321,15 @@ class EfficientNodeLabelling(torch.nn.Module):
             dense_dim = int((self.k - 2) / 2 + 1)
             dense_dim = (dense_dim - conv1d_kws[1] + 1) * conv1d_channels[1]
         else:
-            dense_dim = 5 + in_channels
+            self.struct_dim = 5
+            dense_dim = self.struct_dim + in_channels
         self.lins = torch.nn.ModuleList()
         self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
 
+        self.struct_encode = get_encoder(self.struct_dim, self.dropout)
         self.cached_adj2_return = None
         self.cached_adj2 = None
 
@@ -387,10 +390,9 @@ class EfficientNodeLabelling(torch.nn.Module):
         # (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), _ = propagation(edges, adj)
 
         out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
+        out = self.struct_encode(out)
         if self.in_channels > 0:
-            x_i = x[edges[0]]
-            x_j = x[edges[1]]
-            x = torch.cat([x_i*x_j, out], dim=1)
+            x = torch.cat([x[edges[0]]*x[edges[1]], out], dim=1)
         else:
             x = out
         for lin in self.lins[:-1]:
@@ -431,6 +433,7 @@ class DotProductLabelling(torch.nn.Module):
         elif self.prop_type == 'combine':
             struct_dim = 8
             self.prop_func = propagation_combine
+        self.struct_encode = get_encoder(struct_dim, self.dropout)
 
         dense_dim = struct_dim + in_channels
         self.lins = torch.nn.ModuleList()
@@ -460,6 +463,7 @@ class DotProductLabelling(torch.nn.Module):
             else:
                 propped, _ = self.prop_func(edges, adj, cached_two_hop_adj=self.cached_two_hop_adj,torchhd_style=self.torchhd_style)
         out = torch.stack([*propped], dim=1)
+        out = self.struct_encode(out)
 
         if self.in_channels > 0:
             x_i = x[edges[0]]
@@ -488,3 +492,12 @@ def get_count(l:SparseTensor, dim_size:int):
     row,col = get_node_ids(l)
     count = scatter_add(torch.ones_like(row), row, dim_size=dim_size)
     return count
+
+def get_encoder(dim, dropout):
+    struct_encode = nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.BatchNorm1d(dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+    return struct_encode
