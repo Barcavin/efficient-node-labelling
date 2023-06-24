@@ -127,16 +127,16 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
     data_folder = Path(root) / name
     data_folder.mkdir(parents=True, exist_ok=True)
     file_path = data_folder / f"split{run}_{int(100*val_ratio)}_{int(100*test_ratio)}.pt"
+    data,_ = get_dataset(root, name)
     if file_path.exists():
         split_edge = torch.load(file_path)
         print(f"load split edges from {file_path}")
     else:
-        data,_ = get_dataset(root, name)
         split_edge = randomsplit(data)
         torch.save(split_edge, file_path)
         print(f"save split edges to {file_path}")
     data.edge_index = to_undirected(split_edge["train"]["edge"].t())
-    data.num_nodes = data.x.shape[0] if data.x is not None else 0
+    data.num_features = data.x.shape[0] if data.x is not None else 0
     print("-"*20)
     print(f"train: {split_edge['train']['edge'].shape[0]}")
     print(f"{split_edge['train']['edge'][:10,:]}")
