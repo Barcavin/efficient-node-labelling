@@ -98,7 +98,8 @@ def randomsplit(data, val_ratio: float=0.10, test_ratio: float=0.2):
     def removerepeated(ei):
         ei = to_undirected(ei)
         ei = ei[:, ei[0]<ei[1]]
-        return e
+        return ei
+
     data = train_test_split_edges(data, test_ratio, test_ratio)
     split_edge = {'train': {}, 'valid': {}, 'test': {}}
     num_val = int(data.val_pos_edge_index.shape[1] * val_ratio/test_ratio)
