@@ -166,7 +166,7 @@ def main():
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP+exact","DP+prop_only","DP+combine"])  ##inner/mlp
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
-    parser.add_argument('--use_embedding', type=str2bool, default='True', help='whether to use node embedding as input')
+    parser.add_argument('--use_embedding', type=str2bool, default='True', help='whether to train node embedding')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
     parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
@@ -192,19 +192,19 @@ def main():
     args = parser.parse_args()
     # start time
     start_time = time.time()
-    if not args.print_summary:
-        print(args)
     set_random_seeds(234)
 
     device = f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device)
 
     data, split_edge = get_dataset(args.dataset_dir, args.dataset, args.use_valedges_as_input, args.year)
-    if data.x is None and args.use_feature:
-        raise ValueError('Cannot use --use_feature=True if there are no node features.')
+    if data.x is None:
+        args.use_feature = False
 
     if args.print_summary:
         data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
+    else:
+        print(args)
     final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
     with open(final_log_path, 'w') as f:
         print(args, file=f)
