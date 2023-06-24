@@ -9,19 +9,48 @@ import torch.nn.functional as F
 from ogb.linkproppred import PygLinkPropPredDataset
 from torch_geometric import datasets
 from torch_geometric.data import Data
-from torch_geometric.transforms import (BaseTransform, Compose,
+from torch_geometric.transforms import (BaseTransform, Compose, ToSparseTensor,
                                         NormalizeFeatures, RandomLinkSplit,
                                         ToDevice, ToUndirected)
 from torch_geometric.utils import (add_self_loops, degree,
                                    from_scipy_sparse_matrix, index_to_mask,
                                    is_undirected, negative_sampling,
-                                   to_undirected, train_test_split_edges, coalesce)                         
+                                   to_undirected, train_test_split_edges, coalesce)
+from torch_sparse import SparseTensor                         
 
 
-def get_dataset(root, name: str):
+def get_dataset(root, name: str, use_valedges_as_input, year):
     if name.startswith('ogbl-'):
-        dataset = PygLinkPropPredDataset(name=name, root=root, transform=transform)
-        return dataset
+        dataset = PygLinkPropPredDataset(name=dataset, root=root)
+        data = dataset[0]
+        """
+            SparseTensor's value is NxNx1 for collab. due to edge_weight is |E|x1
+            NeuralNeighborCompletion just set edge_weight=None
+            ELPH use edge_weight
+        """
+        if 'edge_weight' in data:
+            data.edge_weight = data.edge_weight.view(-1).to(torch.float)
+
+        split_edge = dataset.get_edge_split()
+        if name == 'ogbl-collab' and year > 0:  # filter out training edges before args.year
+            data, split_edge = filter_by_year(data, split_edge, year)
+        print("-"*20)
+        print(f"train: {split_edge['train']['edge'].shape[0]}")
+        print(f"{split_edge['train']['edge'][:10,:]}")
+        print(f"valid: {split_edge['valid']['edge'].shape[0]}")
+        print(f"test: {split_edge['test']['edge'].shape[0]}")
+        print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
+        data = ToSparseTensor(remove_edge_index=False)(data)
+        # Use training + validation edges for inference on test set.
+        if use_valedges_as_input:
+            val_edge_index = split_edge['valid']['edge'].t()
+            full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+            data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
+                                                    sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
+            data.full_adj_t = data.full_adj_t.to_symmetric()
+        else:
+            data.full_adj_t = data.adj_t
+        return data, split_edge
 
     pyg_dataset_dict = {
         'cora': (datasets.Planetoid, 'Cora'),
@@ -37,11 +66,10 @@ def get_dataset(root, name: str):
 
     if name in pyg_dataset_dict:
         dataset_class, name = pyg_dataset_dict[name]
-        dataset = dataset_class(root, name=name, transform=ToUndirected())
+        data = dataset_class(root, name=name, transform=ToUndirected())[0]
     else:
-        dataset = load_unsplitted_data(root, name)
-        dataset = [dataset]
-    return dataset
+        data = load_unsplitted_data(root, name)
+    return data, None
 
 def load_unsplitted_data(root,name):
     # read .mat format files
@@ -199,8 +227,13 @@ def initialize(data, method):
         else:
             raise NotImplementedError
     else:
-        input_size = data.x.shape[1]
+        input_size = data.num_features
     return data, input_size
+
+def initial_embedding(data, hidden_channels, device):
+    embedding= torch.nn.Embedding(data.num_nodes, hidden_channels).to(device)
+    return embedding
+
 
 def create_input(data):
     if hasattr(data, 'emb') and data.emb is not None:

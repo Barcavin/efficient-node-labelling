@@ -50,7 +50,7 @@ class MLP(nn.Module):
         for layer in self.layers:
             layer.reset_parameters()
 
-    def forward(self, feats):
+    def forward(self, feats, adj_t):
         h = feats
         for l, layer in enumerate(self.layers):
             h = layer(h)
@@ -63,15 +63,24 @@ class MLP(nn.Module):
 
 class GCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout):
+                 dropout, use_feature=True, embedding=None):
         super(GCN, self).__init__()
 
+        self.use_feature = use_feature
+        self.embedding = embedding
+        self.input_size = 0
+        if self.use_feature:
+            self.input_size += in_channels
+        if self.embedding is not None:
+            self.input_size += embedding.embedding_dim
         self.convs = torch.nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels, cached=True))
-        for _ in range(num_layers - 2):
-            self.convs.append(
-                GCNConv(hidden_channels, hidden_channels, cached=True))
-        self.convs.append(GCNConv(hidden_channels, out_channels, cached=True))
+        
+        if self.input_size > 0:
+            self.convs.append(GCNConv(self.input_size, hidden_channels, cached=False))
+            for _ in range(num_layers - 2):
+                self.convs.append(
+                    GCNConv(hidden_channels, hidden_channels, cached=False))
+            self.convs.append(GCNConv(hidden_channels, out_channels, cached=False))
 
         self.dropout = dropout
 
@@ -80,11 +89,20 @@ class GCN(torch.nn.Module):
             conv.reset_parameters()
 
     def forward(self, x, adj_t):
-        for conv in self.convs[:-1]:
-            x = conv(x, adj_t)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj_t)
+        if self.input_size > 0:
+            if self.use_feature and self.embedding is not None:
+                x = torch.cat([x, self.embedding.weight], dim=1)
+            elif self.use_feature:
+                x = x
+            elif self.embedding is not None:
+                x = self.embedding.weight
+            else:
+                raise ValueError("No input features or embedding is provided")
+            for conv in self.convs[:-1]:
+                x = conv(x, adj_t)
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+            x = self.convs[-1](x, adj_t)
         return x
         
 class SAGE(torch.nn.Module):
@@ -278,15 +296,13 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, dgcnn=False, use_feature=False):
+                 dropout, num_hops=2, dgcnn=False):
         super(EfficientNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
         self.dgcnn = dgcnn
-        self.use_feature = use_feature
-        if not self.use_feature:
-            in_channels = 0
+        self.in_channels = in_channels
 
         self.max_z = 4
         self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
@@ -371,7 +387,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         # (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), _ = propagation(edges, adj)
 
         out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
-        if self.use_feature:
+        if self.in_channels > 0:
             x_i = x[edges[0]]
             x_j = x[edges[1]]
             x = torch.cat([x_i*x_j, out], dim=1)
@@ -398,12 +414,12 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, use_feature=False, prop_type='exact', torchhd_style=True):
+                 dropout, num_hops=2, prop_type='exact', torchhd_style=True):
         super(DotProductLabelling, self).__init__()
 
+        self.in_channels = in_channels
         self.dropout = dropout
         self.num_hops = num_hops
-        self.use_feature = use_feature
         self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
         self.torchhd_style=torchhd_style
         if self.prop_type == 'prop_only':
@@ -415,8 +431,6 @@ class DotProductLabelling(torch.nn.Module):
         elif self.prop_type == 'combine':
             struct_dim = 8
             self.prop_func = propagation_combine
-        if not self.use_feature:
-            in_channels = 0
 
         dense_dim = struct_dim + in_channels
         self.lins = torch.nn.ModuleList()
@@ -447,7 +461,7 @@ class DotProductLabelling(torch.nn.Module):
                 propped, _ = self.prop_func(edges, adj, cached_two_hop_adj=self.cached_two_hop_adj,torchhd_style=self.torchhd_style)
         out = torch.stack([*propped], dim=1)
 
-        if self.use_feature:
+        if self.in_channels > 0:
             x_i = x[edges[0]]
             x_j = x[edges[1]]
             x = torch.cat([x_i*x_j, out], dim=1)
