@@ -8,7 +8,7 @@ from torch_sparse import SparseTensor, matmul
 from torch_scatter import scatter_add
 
 from Conv import Sage_conv
-from node_label import de_plus_finder, propagation, propagation_only, propagation_combine
+from node_label import de_plus_finder, DotHash
 
 
 class MLP(nn.Module):
@@ -50,7 +50,7 @@ class MLP(nn.Module):
         for layer in self.layers:
             layer.reset_parameters()
 
-    def forward(self, feats, adj_t):
+    def forward(self, feats, adj_t=None):
         h = feats
         for l, layer in enumerate(self.layers):
             h = layer(h)
@@ -296,13 +296,16 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, dgcnn=False):
+                 dropout, num_hops=2, dgcnn=False, use_degree='none'):
         super(EfficientNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
         self.dgcnn = dgcnn
         self.in_channels = in_channels
+        self.use_degree = use_degree
+        if self.use_degree == 'mlp':
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, dropout, norm_type="batch")
 
         self.max_z = 4
         self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
@@ -380,12 +383,31 @@ class EfficientNodeLabelling(torch.nn.Module):
         #                                 get_node_ids(l_2_inf),
         #                                 get_node_ids(l_inf_2)], dim=1)
         # x_all =  z_emb
+        if self.use_degree == 'none':
+            node_weight = None
+        elif self.use_degree == 'mlp': # 'mlp' for now
+            xs = []
+            if x is not None:
+                xs.append(x)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
+            xs.append(degree)
+            node_weight_feat = torch.cat(xs, dim=1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1)
+        else:
+            # AA or RA
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
+            if self.use_degree == 'AA':
+                node_weight = torch.reciprocal(torch.log(degree))
+            elif self.use_degree == 'RA':
+                node_weight = torch.reciprocal(degree)
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
+
         dim_size = edges.size(1)
-        c_1_1 = get_count(l_1_1, dim_size)
-        c_1_2 = get_count(l_1_2, dim_size) + get_count(l_2_1, dim_size)
-        c_1_inf = get_count(l_1_inf, dim_size) + get_count(l_inf_1, dim_size)
-        c_2_2 = get_count(l_2_2, dim_size)
-        c_2_inf = get_count(l_2_inf, dim_size) + get_count(l_inf_2, dim_size)
+        c_1_1 = get_count(l_1_1, dim_size, node_weight)
+        c_1_2 = get_count(l_1_2, dim_size, node_weight) + get_count(l_2_1, dim_size, node_weight)
+        c_1_inf = get_count(l_1_inf, dim_size, node_weight) + get_count(l_inf_1, dim_size, node_weight)
+        c_2_2 = get_count(l_2_2, dim_size, node_weight)
+        c_2_inf = get_count(l_2_inf, dim_size, node_weight) + get_count(l_inf_2, dim_size, node_weight)
 
         # (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), _ = propagation(edges, adj)
 
@@ -416,7 +438,7 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, prop_type='exact', torchhd_style=True):
+                 dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none'):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
@@ -424,15 +446,16 @@ class DotProductLabelling(torch.nn.Module):
         self.num_hops = num_hops
         self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
         self.torchhd_style=torchhd_style
+        self.use_degree = use_degree
+        if self.use_degree == 'mlp':
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, dropout, norm_type="batch")
         if self.prop_type == 'prop_only':
             struct_dim = 4
-            self.prop_func = propagation_only
         elif self.prop_type == 'exact':
             struct_dim = 5
-            self.prop_func = propagation
         elif self.prop_type == 'combine':
             struct_dim = 8
-            self.prop_func = propagation_combine
+        self.dothash = DotHash(torchhd_style=self.torchhd_style, prop_type=self.prop_type)
         self.struct_encode = get_encoder(struct_dim, self.dropout)
 
         dense_dim = struct_dim + in_channels
@@ -455,13 +478,26 @@ class DotProductLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
-        if self.training:
-            propped, _ = self.prop_func(edges, adj,torchhd_style=self.torchhd_style)
+        if self.use_degree == 'none':
+            node_weight = None
+        elif self.use_degree == 'mlp': # 'mlp' for now
+            xs = []
+            if x is not None:
+                xs.append(x)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
+            xs.append(degree)
+            node_weight_feat = torch.cat(xs, dim=1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1)
         else:
-            if self.cached_two_hop_adj is None:
-                propped, self.cached_two_hop_adj = self.prop_func(edges, adj, cached_two_hop_adj=None,torchhd_style=self.torchhd_style)
-            else:
-                propped, _ = self.prop_func(edges, adj, cached_two_hop_adj=self.cached_two_hop_adj,torchhd_style=self.torchhd_style)
+            # AA or RA
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
+            if self.use_degree == 'AA':
+                node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
+            elif self.use_degree == 'RA':
+                node_weight = torch.sqrt(torch.reciprocal(degree))
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
+
+        propped = self.dothash(edges, adj, node_weight=node_weight)
         out = torch.stack([*propped], dim=1)
         out = self.struct_encode(out)
 
@@ -488,9 +524,13 @@ def get_node_ids(l:SparseTensor):
     row, col, _ = l.coo()
     return torch.stack([row, col], dim=0)
 
-def get_count(l:SparseTensor, dim_size:int):
+def get_count(l:SparseTensor, dim_size:int, weight=None):
     row,col = get_node_ids(l)
-    count = scatter_add(torch.ones_like(row), row, dim_size=dim_size)
+    if weight is None:
+        weight = torch.ones_like(row)
+    else:
+        weight = weight[row]
+    count = scatter_add(weight, row, dim_size=dim_size)
     return count
 
 def get_encoder(dim, dropout):

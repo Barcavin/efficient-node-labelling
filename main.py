@@ -170,6 +170,7 @@ def main():
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
     parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
+    parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="the way to encode node weights")
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -275,13 +276,13 @@ def main():
         elif args.predictor == 'ENL':
             predictor = EfficientNodeLabelling(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.dropout, args.num_hops, 
-                                    dgcnn=args.dgcnn).to(device)
+                                    dgcnn=args.dgcnn, use_degree=args.use_degree).to(device)
         elif 'DP' in args.predictor:
             prop_type = args.predictor.split("+")[1]
             predictor = DotProductLabelling(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.dropout, args.num_hops, 
-                                    prop_type=prop_type, 
-                                    torchhd_style=args.torchhd_style).to(device)
+                                    prop_type=prop_type, torchhd_style=args.torchhd_style,
+                                    use_degree=args.use_degree).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()

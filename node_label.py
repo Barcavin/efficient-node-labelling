@@ -14,94 +14,126 @@ from torch_geometric.data import Data
 
 import torchhd
 
-def get_random_node_vectors(num_nodes: int, dimensions: int, device=None, torchhd_style=True) -> Tensor:
-    if torchhd_style:
-        scale = math.sqrt(1 / dimensions)
+class DotHash(torch.nn.Module):
+    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only"):
+        super().__init__()
+        self.dim = dim
+        self.torchhd_style = torchhd_style
+        self.prop_type = prop_type
+        self.cached_two_hop_adj = None
 
-        node_vectors = torchhd.random(num_nodes, dimensions, device=device)
-        node_vectors.mul_(scale)  # make them unit vectors
-    else:
-        node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes, dimensions), dtype=torch.float32, device=device)))
-    return node_vectors
+    def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None):
+        if self.prop_type == "prop_only":
+            return self.propagation_only(edges, adj_t, node_weight)
+        elif self.prop_type == "combine":
+            return self.propagation_combine(edges, adj_t, node_weight)
+        elif self.prop_type == "exact":
+            return self.propagation(edges, adj_t, node_weight)
 
-def propagation(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
+    def get_random_node_vectors(self, num_nodes: int, device, node_weight) -> Tensor:
+        if self.torchhd_style:
+            scale = math.sqrt(1 / self.dim)
+            node_vectors = torchhd.random(num_nodes, self.dim, device=device)
+            node_vectors.mul_(scale)  # make them unit vectors
+        else:
+            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes, self.dim), dtype=torch.float32, device=device)))
+        if node_weight is not None:
+            node_weight = node_weight.unsqueeze(1) # Note: not sqrt here because it can cause problem for MLP when output is negative
+                                                   # thus, it requires the MLP to approximate one more sqrt?
+            node_vectors.mul_(node_weight)
+        return node_vectors
 
-    if cached_two_hop_adj is None:
-        # computing and caching
+    def get_two_hop_adj(self, adj_t):
         adj_t = adj_t.fill_value_(1.0)
         one_and_two_hop_adj = adj_t @ adj_t
         adj_t_with_self_loop = adj_t.fill_diag(1)
         two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
-    else:
-        two_hop_adj = cached_two_hop_adj
-    one_hop_adj = adj_t
+        return adj_t, two_hop_adj
 
-    degree_one_hop = adj_t.sum(dim=1)
-    degree_two_hop = two_hop_adj.sum(dim=1)
+    def propagation(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
 
-    one_hop_x = matmul(one_hop_adj, x)
-    two_hop_x = matmul(two_hop_adj, x)
+        if self.training: # training always requires compute especially for target input mask
+            one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        else: # testing
+            if self.cached_two_hop_adj is None:
+                # caching
+                one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+                self.cached_two_hop_adj = two_hop_adj
+            else:
+                # load cache
+                one_hop_adj = adj_t.fill_value_(1.0)
+                two_hop_adj = self.cached_two_hop_adj
+            
 
-    count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
+        degree_one_hop = one_hop_adj.sum(dim=1)
+        degree_two_hop = two_hop_adj.sum(dim=1)
 
-    count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
-    count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
-    return (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), two_hop_adj
+        one_hop_x = matmul(one_hop_adj, x)
+        two_hop_x = matmul(two_hop_adj, x)
 
-def propagation_only(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
+        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
 
-    one_hop_x = matmul(adj_t, x)
-    two_hop_x = matmul(adj_t, one_hop_x)
-    degree_one_hop = adj_t.sum(dim=1)
+        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
+        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
+        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
 
-    count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_2_2 = ((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
-
-
-    count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[0]] + one_hop_x[edges[1]] * two_hop_x[edges[1]]).sum(dim=-1)
-    return (count_1_1, count_1_2, count_2_2, count_self_1_2), None
-
-
-def propagation_combine(edges: Tensor, adj_t: SparseTensor, dim: int=1024, cached_two_hop_adj: SparseTensor=None, torchhd_style=True):
-    x = get_random_node_vectors(adj_t.size(0), dim, device=adj_t.device(),torchhd_style=torchhd_style)
-
-    if cached_two_hop_adj is None:
-        # caching
+    def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
         adj_t = adj_t.fill_value_(1.0)
-        one_and_two_hop_adj = adj_t @ adj_t
-        adj_t_with_self_loop = adj_t.fill_diag(1)
-        two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
-    else:
-        two_hop_adj = cached_two_hop_adj
-    one_hop_adj = adj_t
-    
-    degree_one_hop = adj_t.sum(dim=1)
-    degree_two_hop = two_hop_adj.sum(dim=1)
 
-    one_hop_x = matmul(one_hop_adj, x)
-    two_hop_x = matmul(two_hop_adj, x)
+        one_hop_x = matmul(adj_t, x)
+        two_hop_x = matmul(adj_t, one_hop_x)
+        degree_one_hop = adj_t.sum(dim=1)
 
-    count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
-
-    count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
-    count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
-
-    two_hop_x_prop = matmul(adj_t, one_hop_x)
-
-    count_1_2_only = (one_hop_x[edges[0]] * two_hop_x_prop[edges[1]]).sum(dim=-1) + (two_hop_x_prop[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-    count_2_2_only = ((two_hop_x_prop[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x_prop[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_2_2 = ((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
 
 
-    count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x_prop[edges[0]] + one_hop_x[edges[1]] * two_hop_x_prop[edges[1]]).sum(dim=-1)
+        count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[0]] + one_hop_x[edges[1]] * two_hop_x[edges[1]]).sum(dim=-1)
+        return count_1_1, count_1_2, count_2_2, count_self_1_2
 
-    return (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2), two_hop_adj
+
+    def propagation_combine(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
+
+        if self.training: # training always requires compute especially for target input mask
+            one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        else: # testing
+            if self.cached_two_hop_adj is None:
+                # caching
+                one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+                self.cached_two_hop_adj = two_hop_adj
+            else:
+                # load cache
+                one_hop_adj = adj_t.fill_value_(1.0)
+                two_hop_adj = self.cached_two_hop_adj
+        
+        degree_one_hop = one_hop_adj.sum(dim=1)
+        degree_two_hop = two_hop_adj.sum(dim=1)
+
+        one_hop_x = matmul(one_hop_adj, x)
+        two_hop_x = matmul(two_hop_adj, x)
+
+        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
+
+        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
+        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
+
+        two_hop_x_prop = matmul(one_hop_adj, one_hop_x)
+
+        count_1_2_only = (one_hop_x[edges[0]] * two_hop_x_prop[edges[1]]).sum(dim=-1) + (two_hop_x_prop[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
+        count_2_2_only = ((two_hop_x_prop[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x_prop[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+
+
+        count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x_prop[edges[0]] + one_hop_x[edges[1]] * two_hop_x_prop[edges[1]]).sum(dim=-1)
+
+        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
 
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
