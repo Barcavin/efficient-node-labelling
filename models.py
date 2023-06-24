@@ -98,11 +98,11 @@ class GCN(torch.nn.Module):
             if self.embedding is not None:
                 xs.append(self.embedding_encode(self.embedding.weight))
             x = torch.cat(xs, dim=1)
-            for conv in self.convs[:-1]:
+            for conv in self.convs:
                 x = conv(x, adj_t)
-                x = F.relu(x)
+                # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
                 x = F.dropout(x, p=self.dropout, training=self.training)
-            x = self.convs[-1](x, adj_t)
+            # x = self.convs[-1](x, adj_t) # Note: since it's not the last layer we may still apply dropout
         return x
         
 class SAGE(torch.nn.Module):

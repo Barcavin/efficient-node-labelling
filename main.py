@@ -85,11 +85,7 @@ def test(encoder, predictor, data, split_edge, evaluator,
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
-    if use_valedges_as_input:
-        adj_t = data.full_adj_t
-    else:
-        adj_t = data.adj_t
-
+    adj_t = data.adj_t
     h = encoder(data.x, adj_t)
 
     # pos_train_edge = split_edge['train']['edge'].to(device)
@@ -111,6 +107,9 @@ def test(encoder, predictor, data, split_edge, evaluator,
         neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
 
+    if use_valedges_as_input:
+        adj_t = data.full_adj_t
+        h = encoder(data.x, adj_t)
     pos_test_preds = []
     for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
         edge = pos_test_edge[perm].t()
