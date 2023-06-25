@@ -21,19 +21,19 @@ from torch_sparse import SparseTensor
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
-        dataset = PygLinkPropPredDataset(name=dataset, root=root)
+        dataset = PygLinkPropPredDataset(name=name, root=root)
         data = dataset[0]
         """
             SparseTensor's value is NxNx1 for collab. due to edge_weight is |E|x1
             NeuralNeighborCompletion just set edge_weight=None
             ELPH use edge_weight
         """
-        if 'edge_weight' in data:
-            data.edge_weight = data.edge_weight.view(-1).to(torch.float)
 
         split_edge = dataset.get_edge_split()
         if name == 'ogbl-collab' and year > 0:  # filter out training edges before args.year
             data, split_edge = filter_by_year(data, split_edge, year)
+        if 'edge_weight' in data:
+            data.edge_weight = data.edge_weight.view(-1).to(torch.float)
         print("-"*20)
         print(f"train: {split_edge['train']['edge'].shape[0]}")
         print(f"{split_edge['train']['edge'][:10,:]}")

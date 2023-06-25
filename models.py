@@ -335,6 +335,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         self.struct_encode = get_encoder(self.struct_dim, self.dropout)
         self.cached_adj2_return = None
         self.cached_adj2 = None
+        # self.dothash = DotHash(torchhd_style=True, prop_type="exact")
 
 
     def reset_parameters(self):
@@ -409,7 +410,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         c_2_2 = get_count(l_2_2, dim_size, node_weight)
         c_2_inf = get_count(l_2_inf, dim_size, node_weight) + get_count(l_inf_2, dim_size, node_weight)
 
-        # (count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf), _ = propagation(edges, adj)
+        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = self.dothash(edges, adj, node_weight=node_weight)
 
         out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
         out = self.struct_encode(out)
@@ -464,7 +465,6 @@ class DotProductLabelling(torch.nn.Module):
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
-        self.cached_two_hop_adj=None
 
 
     def reset_parameters(self):
