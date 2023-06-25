@@ -72,9 +72,9 @@ class DotHash(torch.nn.Module):
         one_hop_x = matmul(one_hop_adj, x)
         two_hop_x = matmul(two_hop_adj, x)
 
-        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
+        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
 
         count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
         count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
@@ -88,12 +88,12 @@ class DotHash(torch.nn.Module):
         two_hop_x = matmul(adj_t, one_hop_x)
         degree_one_hop = adj_t.sum(dim=1)
 
-        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_2_2 = ((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_2_2 = dot_product((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) , (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
 
 
-        count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[0]] + one_hop_x[edges[1]] * two_hop_x[edges[1]]).sum(dim=-1)
+        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
         return count_1_1, count_1_2, count_2_2, count_self_1_2
 
 
@@ -118,23 +118,31 @@ class DotHash(torch.nn.Module):
         one_hop_x = matmul(one_hop_adj, x)
         two_hop_x = matmul(two_hop_adj, x)
 
-        count_1_1 = (one_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_1_2 = (one_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1) + (two_hop_x[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_2_2 = (two_hop_x[edges[0]] * two_hop_x[edges[1]]).sum(dim=-1)
+        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
 
         count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
         count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
 
         two_hop_x_prop = matmul(one_hop_adj, one_hop_x)
 
-        count_1_2_only = (one_hop_x[edges[0]] * two_hop_x_prop[edges[1]]).sum(dim=-1) + (two_hop_x_prop[edges[0]] * one_hop_x[edges[1]]).sum(dim=-1)
-        count_2_2_only = ((two_hop_x_prop[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) * (two_hop_x_prop[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]])).sum(dim=-1)
+        count_1_2_only = dot_product(one_hop_x[edges[0]] , two_hop_x_prop[edges[1]]) + dot_product(two_hop_x_prop[edges[0]] , one_hop_x[edges[1]])
+        count_2_2_only = dot_product((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) , (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
 
 
-        count_self_1_2 = (one_hop_x[edges[0]] * two_hop_x_prop[edges[0]] + one_hop_x[edges[1]] * two_hop_x_prop[edges[1]]).sum(dim=-1)
+        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
 
         return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
 
+
+def dotproduct_naive(tensor1, tensor2):
+    return (tensor1 * tensor2).sum(dim=-1)
+
+def dotproduct_bmm(tensor1, tensor2):
+    return torch.bmm(tensor1.unsqueeze(1), tensor2.unsqueeze(2)).view(-1)
+
+dot_product = dotproduct_naive
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
     '''
