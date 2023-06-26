@@ -76,6 +76,8 @@ class DotHash(torch.nn.Module):
         # size: [(2 x num_target_edges(row,col)) , total_num_nodes_in_2_hop_subgraph ]
         one_hop_adj = one_hop_adj[subset]
         two_hop_adj = two_hop_adj[subset]
+
+        ##### no cache for testing, because the adj_t may change when use_val_as_input is True #####
         # if self.training: # training always requires compute especially for target input mask
         #     one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
         # else: # testing
