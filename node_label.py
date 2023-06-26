@@ -27,10 +27,12 @@ class DotHash(torch.nn.Module):
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None):
         if self.prop_type == "prop_only":
             return self.propagation_only(edges, adj_t, node_weight)
-        elif self.prop_type == "combine":
-            return self.propagation_combine(edges, adj_t, node_weight)
         elif self.prop_type == "exact":
             return self.propagation(edges, adj_t, node_weight)
+        elif self.prop_type == "combine":
+            exact = self.propagation(edges, adj_t, node_weight)
+            prop_only = self.propagation_only(edges, adj_t, node_weight)
+            return exact + prop_only
 
     def subgraph(self, edges: Tensor, adj_t: SparseTensor):
         row,col = edges
@@ -119,8 +121,8 @@ class DotHash(torch.nn.Module):
 
     def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
         x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
-        adj_t = adj_t.fill_value_(1.0)
-
+        # remove values from adj_t
+        adj_t = adj_t.set_value(None)
         one_hop_x = matmul(adj_t, x)
         two_hop_x = matmul(adj_t, one_hop_x)
         degree_one_hop = adj_t.sum(dim=1)
@@ -132,45 +134,6 @@ class DotHash(torch.nn.Module):
 
         count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
         return count_1_1, count_1_2, count_2_2, count_self_1_2
-
-
-    def propagation_combine(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
-        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
-
-        if self.training: # training always requires compute especially for target input mask
-            one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
-        else: # testing
-            if self.cached_two_hop_adj is None:
-                # caching
-                one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
-                self.cached_two_hop_adj = two_hop_adj
-            else:
-                # load cache
-                one_hop_adj = adj_t.fill_value_(1.0)
-                two_hop_adj = self.cached_two_hop_adj
-        
-        degree_one_hop = one_hop_adj.sum(dim=1)
-        degree_two_hop = two_hop_adj.sum(dim=1)
-
-        one_hop_x = matmul(one_hop_adj, x)
-        two_hop_x = matmul(two_hop_adj, x)
-
-        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
-
-        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
-        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
-
-        two_hop_x_prop = matmul(one_hop_adj, one_hop_x)
-
-        count_1_2_only = dot_product(one_hop_x[edges[0]] , two_hop_x_prop[edges[1]]) + dot_product(two_hop_x_prop[edges[0]] , one_hop_x[edges[1]])
-        count_2_2_only = dot_product((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) , (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
-
-
-        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
-
-        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
 
 
 def dotproduct_naive(tensor1, tensor2):

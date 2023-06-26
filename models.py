@@ -455,7 +455,7 @@ class DotProductLabelling(torch.nn.Module):
         elif self.prop_type == 'exact':
             struct_dim = 5
         elif self.prop_type == 'combine':
-            struct_dim = 8
+            struct_dim = 9
         self.dothash = DotHash(torchhd_style=self.torchhd_style, prop_type=self.prop_type)
         self.struct_encode = get_encoder(struct_dim, self.dropout)
 
