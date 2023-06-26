@@ -12,6 +12,8 @@ import scipy.sparse as ssp
 from scipy.sparse.csgraph import shortest_path
 from torch_geometric.data import Data
 
+from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_index
+
 import torchhd
 
 class DotHash(torch.nn.Module):
@@ -30,6 +32,19 @@ class DotHash(torch.nn.Module):
         elif self.prop_type == "exact":
             return self.propagation(edges, adj_t, node_weight)
 
+    def subgraph(self, edges: Tensor, adj_t: SparseTensor):
+        row,col = edges
+        nodes = torch.cat((row,col),dim=-1)
+        edge_index,_ = to_edge_index(adj_t)
+        subset, new_edge_index, inv, edge_mask = pyg_k_hop_subgraph(nodes, 2, edge_index=edge_index, 
+                                                                    num_nodes=adj_t.size(0), relabel_nodes=True)
+        # subset[inv] = nodes. The new node id is based on `subset`'s order.
+        # inv means the new idx (in subset) of the old nodes in `nodes`
+        new_adj_t = SparseTensor(row=new_edge_index[0], col=new_edge_index[1], 
+                                 sparse_sizes=(subset.size(0), subset.size(0)))
+        new_edges = inv.view(2,-1)
+        return new_adj_t, new_edges
+
     def get_random_node_vectors(self, num_nodes: int, device, node_weight) -> Tensor:
         if self.torchhd_style:
             scale = math.sqrt(1 / self.dim)
@@ -44,40 +59,60 @@ class DotHash(torch.nn.Module):
         return node_vectors
 
     def get_two_hop_adj(self, adj_t):
-        adj_t = adj_t.fill_value_(1.0)
+        # adj_t = adj_t.fill_value_(1.0) # no need to fill value because of subgraph op
         one_and_two_hop_adj = adj_t @ adj_t
         adj_t_with_self_loop = adj_t.fill_diag(1)
         two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
         return adj_t, two_hop_adj
 
     def propagation(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        # get the 2-hop subgraph of the target edges
+        adj_t, edges = self.subgraph(edges, adj_t)
         x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
 
-        if self.training: # training always requires compute especially for target input mask
-            one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
-        else: # testing
-            if self.cached_two_hop_adj is None:
-                # caching
-                one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
-                self.cached_two_hop_adj = two_hop_adj
-            else:
-                # load cache
-                one_hop_adj = adj_t.fill_value_(1.0)
-                two_hop_adj = self.cached_two_hop_adj
+        one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        subset = edges.view(-1) # flatten the target nodes [row, col]
+
+        # size: [(2 x num_target_edges(row,col)) , total_num_nodes_in_2_hop_subgraph ]
+        one_hop_adj = one_hop_adj[subset]
+        two_hop_adj = two_hop_adj[subset]
+        # if self.training: # training always requires compute especially for target input mask
+        #     one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        # else: # testing
+        #     if self.cached_two_hop_adj is None:
+        #         # caching
+        #         one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        #         self.cached_two_hop_adj = two_hop_adj
+        #     else:
+        #         # load cache
+        #         one_hop_adj = adj_t.fill_value_(1.0)
+        #         two_hop_adj = self.cached_two_hop_adj
             
 
         degree_one_hop = one_hop_adj.sum(dim=1)
+        degree_one_hop = degree_one_hop.view(2, edges.size(1))
         degree_two_hop = two_hop_adj.sum(dim=1)
+        degree_two_hop = degree_two_hop.view(2, edges.size(1))
 
-        one_hop_x = matmul(one_hop_adj, x)
+        one_hop_x = matmul(one_hop_adj, x) # size: [(2 x num_target_edges(row,col)) , dim]
         two_hop_x = matmul(two_hop_adj, x)
 
-        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
+        one_hop_x = one_hop_x.view(2, edges.size(1), -1)
+        two_hop_x = two_hop_x.view(2, edges.size(1), -1)
 
-        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
-        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
+        count_1_1 = dot_product(one_hop_x[0,:,:], one_hop_x[1,:,:])
+        count_1_2 = dot_product(one_hop_x[0,:,:] , two_hop_x[1,:,:]) + dot_product(two_hop_x[0,:,:] , one_hop_x[1,:,:])
+        count_2_2 = dot_product(two_hop_x[0,:,:] , two_hop_x[1,:,:])
+
+        count_1_inf = degree_one_hop[0,:] + degree_one_hop[1,:] - 2 * count_1_1 - count_1_2
+        count_2_inf = degree_two_hop[0,:] + degree_two_hop[1,:] - 2 * count_2_2 - count_1_2
+
+        # count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
+        # count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        # count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
+
+        # count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
+        # count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
         return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
 
     def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
