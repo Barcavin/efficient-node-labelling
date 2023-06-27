@@ -50,6 +50,9 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
             data.full_adj_t = data.full_adj_t.to_symmetric()
         else:
             data.full_adj_t = data.adj_t
+        # make node feature as float
+        if data.x is not None:
+            data.x = data.x.to(torch.float)
         return data, split_edge
 
     pyg_dataset_dict = {
