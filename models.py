@@ -489,7 +489,7 @@ class DotProductLabelling(torch.nn.Module):
             degree = adj.sum(dim=1).view(-1,1).to(adj.device())
             xs.append(degree)
             node_weight_feat = torch.cat(xs, dim=1)
-            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1) + 1 # like residual, can be learned as 0 if needed
         else:
             # AA or RA
             degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
@@ -497,7 +497,7 @@ class DotProductLabelling(torch.nn.Module):
                 node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
             elif self.use_degree == 'RA':
                 node_weight = torch.sqrt(torch.reciprocal(degree))
-            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0) + 1 # like residual, can be learned as 0 if needed
 
         propped = self.dothash(edges, adj, node_weight=node_weight)
         out = torch.stack([*propped], dim=1)
