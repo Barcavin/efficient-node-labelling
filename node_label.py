@@ -48,7 +48,7 @@ class DotHash(torch.nn.Module):
         new_adj_t = SparseTensor(row=new_edge_index[0], col=new_edge_index[1], 
                                  sparse_sizes=(subset.size(0), subset.size(0)))
         new_edges = inv.view(2,-1)
-        return new_adj_t, new_edges
+        return new_adj_t, new_edges, subset
 
     def get_random_node_vectors(self, adj_t: SparseTensor, node_weight) -> Tensor:
         num_nodes = adj_t.size(0)
@@ -57,7 +57,7 @@ class DotHash(torch.nn.Module):
             degree = adj_t.sum(dim=1)
             nodes_to_one_hot = degree >= self.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
-            warnings.warn(f"number of nodes to one-hot: {one_hot_dim}")
+            # warnings.warn(f"number of nodes to one-hot: {one_hot_dim}", UserWarning)
             embedding = torch.zeros(num_nodes, one_hot_dim + self.dim, device=device)
             one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
             embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
@@ -89,7 +89,8 @@ class DotHash(torch.nn.Module):
 
     def propagation(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
         # get the 2-hop subgraph of the target edges
-        adj_t, edges = self.subgraph(edges, adj_t)
+        adj_t, edges, subset = self.subgraph(edges, adj_t)
+        node_weight = node_weight[subset] if node_weight is not None else None
         x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
 
         one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
