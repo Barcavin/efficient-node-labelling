@@ -164,6 +164,8 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--dothash_dim', type=int, default=1024)
+    parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='minimum degree for onehot encoding during dothash to reduce variance')
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP+exact","DP+prop_only","DP+combine"])  ##inner/mlp
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--use_embedding', type=str2bool, default='True', help='whether to train node embedding')
@@ -283,7 +285,8 @@ def main():
             predictor = DotProductLabelling(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.dropout, args.num_hops, 
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
-                                    use_degree=args.use_degree).to(device)
+                                    use_degree=args.use_degree, dothash_dim=args.dothash_dim,
+                                    minimum_degree_onehot=args.minimum_degree_onehot).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()

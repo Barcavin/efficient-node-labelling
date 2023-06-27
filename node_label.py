@@ -1,5 +1,6 @@
 import math
 from typing import List, Tuple
+import warnings
 
 import numpy as np
 import torch
@@ -17,12 +18,14 @@ from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_
 import torchhd
 
 class DotHash(torch.nn.Module):
-    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only"):
+    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
+                 minimum_degree_onehot: int=-1):
         super().__init__()
         self.dim = dim
         self.torchhd_style = torchhd_style
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
+        self.minimum_degree_onehot = minimum_degree_onehot
 
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None):
         if self.prop_type == "prop_only":
@@ -47,18 +50,35 @@ class DotHash(torch.nn.Module):
         new_edges = inv.view(2,-1)
         return new_adj_t, new_edges
 
-    def get_random_node_vectors(self, num_nodes: int, device, node_weight) -> Tensor:
+    def get_random_node_vectors(self, adj_t: SparseTensor, node_weight) -> Tensor:
+        num_nodes = adj_t.size(0)
+        device = adj_t.device()
+        if self.minimum_degree_onehot > 0:
+            degree = adj_t.sum(dim=1)
+            nodes_to_one_hot = degree >= self.minimum_degree_onehot
+            one_hot_dim = nodes_to_one_hot.sum()
+            warnings.warn(f"number of nodes to one-hot: {one_hot_dim}")
+            embedding = torch.zeros(num_nodes, one_hot_dim + self.dim, device=device)
+            one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
+            embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
+        else:
+            embedding = torch.zeros(num_nodes, self.dim, device=device)
+            nodes_to_one_hot = torch.zeros(num_nodes, dtype=torch.bool, device=device)
+            one_hot_dim = 0
+
         if self.torchhd_style:
             scale = math.sqrt(1 / self.dim)
-            node_vectors = torchhd.random(num_nodes, self.dim, device=device)
+            node_vectors = torchhd.random(num_nodes - one_hot_dim, self.dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
         else:
-            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes, self.dim), dtype=torch.float32, device=device)))
+            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, self.dim), dtype=torch.float32, device=device)))
+        embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
+
         if node_weight is not None:
             node_weight = node_weight.unsqueeze(1) # Note: not sqrt here because it can cause problem for MLP when output is negative
                                                    # thus, it requires the MLP to approximate one more sqrt?
-            node_vectors.mul_(node_weight)
-        return node_vectors
+            embedding.mul_(node_weight)
+        return embedding
 
     def get_two_hop_adj(self, adj_t):
         # adj_t = adj_t.fill_value_(1.0) # no need to fill value because of subgraph op
@@ -70,7 +90,7 @@ class DotHash(torch.nn.Module):
     def propagation(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
         # get the 2-hop subgraph of the target edges
         adj_t, edges = self.subgraph(edges, adj_t)
-        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
+        x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
 
         one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
         subset = edges.view(-1) # flatten the target nodes [row, col]
@@ -120,7 +140,7 @@ class DotHash(torch.nn.Module):
         return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
 
     def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
-        x = self.get_random_node_vectors(adj_t.size(0), device=adj_t.device(), node_weight=node_weight)
+        x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
         # remove values from adj_t
         adj_t = adj_t.set_value(None)
         one_hop_x = matmul(adj_t, x)

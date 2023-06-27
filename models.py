@@ -439,7 +439,8 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none'):
+                 dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
+                 dothash_dim=1024, minimum_degree_onehot=-1):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
@@ -456,7 +457,8 @@ class DotProductLabelling(torch.nn.Module):
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 9
-        self.dothash = DotHash(torchhd_style=self.torchhd_style, prop_type=self.prop_type)
+        self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+                               minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = get_encoder(struct_dim, self.dropout)
 
         dense_dim = struct_dim + in_channels
