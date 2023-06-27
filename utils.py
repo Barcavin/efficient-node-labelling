@@ -9,19 +9,48 @@ import torch.nn.functional as F
 from ogb.linkproppred import PygLinkPropPredDataset
 from torch_geometric import datasets
 from torch_geometric.data import Data
-from torch_geometric.transforms import (BaseTransform, Compose,
+from torch_geometric.transforms import (BaseTransform, Compose, ToSparseTensor,
                                         NormalizeFeatures, RandomLinkSplit,
                                         ToDevice, ToUndirected)
 from torch_geometric.utils import (add_self_loops, degree,
                                    from_scipy_sparse_matrix, index_to_mask,
                                    is_undirected, negative_sampling,
-                                   to_undirected, train_test_split_edges, coalesce)                         
+                                   to_undirected, train_test_split_edges, coalesce)
+from torch_sparse import SparseTensor                         
 
 
-def get_dataset(root, name: str):
+def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
-        dataset = PygLinkPropPredDataset(name=name, root=root, transform=transform)
-        return dataset
+        dataset = PygLinkPropPredDataset(name=name, root=root)
+        data = dataset[0]
+        """
+            SparseTensor's value is NxNx1 for collab. due to edge_weight is |E|x1
+            NeuralNeighborCompletion just set edge_weight=None
+            ELPH use edge_weight
+        """
+
+        split_edge = dataset.get_edge_split()
+        if name == 'ogbl-collab' and year > 0:  # filter out training edges before args.year
+            data, split_edge = filter_by_year(data, split_edge, year)
+        if 'edge_weight' in data:
+            data.edge_weight = data.edge_weight.view(-1).to(torch.float)
+        print("-"*20)
+        print(f"train: {split_edge['train']['edge'].shape[0]}")
+        print(f"{split_edge['train']['edge'][:10,:]}")
+        print(f"valid: {split_edge['valid']['edge'].shape[0]}")
+        print(f"test: {split_edge['test']['edge'].shape[0]}")
+        print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
+        data = ToSparseTensor(remove_edge_index=False)(data)
+        # Use training + validation edges for inference on test set.
+        if use_valedges_as_input:
+            val_edge_index = split_edge['valid']['edge'].t()
+            full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+            data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
+                                                    sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
+            data.full_adj_t = data.full_adj_t.to_symmetric()
+        else:
+            data.full_adj_t = data.adj_t
+        return data, split_edge
 
     pyg_dataset_dict = {
         'cora': (datasets.Planetoid, 'Cora'),
@@ -37,11 +66,10 @@ def get_dataset(root, name: str):
 
     if name in pyg_dataset_dict:
         dataset_class, name = pyg_dataset_dict[name]
-        dataset = dataset_class(root, name=name, transform=ToUndirected())
+        data = dataset_class(root, name=name, transform=ToUndirected())[0]
     else:
-        dataset = load_unsplitted_data(root, name)
-        dataset = [dataset]
-    return dataset
+        data = load_unsplitted_data(root, name)
+    return data, None
 
 def load_unsplitted_data(root,name):
     # read .mat format files
@@ -65,40 +93,23 @@ def set_random_seeds(random_seed=0):
     random.seed(random_seed)
 
 
-def do_edge_split(data, val_ratio=0.05, test_ratio=0.1, fe_ratio=0):
-    if val_ratio==0:
-        # force to generate some valid edge
-        val_ratio_use=0.05
-    else:
-        val_ratio_use=val_ratio
-    split = RandomLinkSplit(num_val=val_ratio_use,
-                            num_test=test_ratio,
-                            is_undirected=True,
-                            split_labels=True,
-                            add_negative_train_samples=False)
-    train,val,test = split(data)
-    # train.edge_index only train true edge
-    # val.edge_index only train true edge
-    # test.edge_index train+val true edge
+# random split dataset
+def randomsplit(data, val_ratio: float=0.10, test_ratio: float=0.2):
+    def removerepeated(ei):
+        ei = to_undirected(ei)
+        ei = ei[:, ei[0]<ei[1]]
+        return ei
 
-    if val_ratio==0:
-        train.edge_index = test.edge_index.clone()
-        val.edge_index = test.edge_index.clone()
-        train.pos_edge_label_index = torch.cat([train.pos_edge_label_index, val.pos_edge_label_index.clone()],axis=1)
-        train.pos_edge_label = torch.cat([train.pos_edge_label, val.pos_edge_label.clone()])
-
-    # split_edge has shape num_edges x 2
-    split_edge = {"valid":{"edge":val.pos_edge_label_index.t(),
-                                "edge_neg":val.neg_edge_label_index.t()},
-        "test":{"edge":test.pos_edge_label_index.t(),
-                        "edge_neg":test.neg_edge_label_index.t()},
-        "train":{}}
-    # print(f"train: {train.pos_edge_label_index.shape[1]}")
-    # print(f"valid: {val.pos_edge_label_index.shape[1]}")
-    # print(f"test: {test.pos_edge_label_index.shape[1]}")
-    split_edge["train"]["edge"] = train.pos_edge_label_index.t()
-    data = train
-    return data, split_edge
+    data = train_test_split_edges(data, test_ratio, test_ratio)
+    split_edge = {'train': {}, 'valid': {}, 'test': {}}
+    num_val = int(data.val_pos_edge_index.shape[1] * val_ratio/test_ratio)
+    data.val_pos_edge_index = data.val_pos_edge_index[:, torch.randperm(data.val_pos_edge_index.shape[1])]
+    split_edge['train']['edge'] = removerepeated(torch.cat((data.train_pos_edge_index, data.val_pos_edge_index[:, :-num_val]), dim=-1)).t()
+    split_edge['valid']['edge'] = removerepeated(data.val_pos_edge_index[:, -num_val:]).t()
+    split_edge['valid']['edge_neg'] = removerepeated(data.val_neg_edge_index).t()
+    split_edge['test']['edge'] = removerepeated(data.test_pos_edge_index).t()
+    split_edge['test']['edge_neg'] = removerepeated(data.test_neg_edge_index).t()
+    return split_edge
 
 
 def str2bool(v):
@@ -116,15 +127,16 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
     data_folder = Path(root) / name
     data_folder.mkdir(parents=True, exist_ok=True)
     file_path = data_folder / f"split{run}_{int(100*val_ratio)}_{int(100*test_ratio)}.pt"
+    data,_ = get_dataset(root, name)
     if file_path.exists():
-        data, split_edge = torch.load(file_path)
+        split_edge = torch.load(file_path)
         print(f"load split edges from {file_path}")
     else:
-        dataset = get_dataset(root, name)
-        original = dataset[0]
-        data, split_edge = do_edge_split(original, val_ratio=val_ratio, test_ratio=test_ratio)
-        torch.save((data, split_edge), file_path)
+        split_edge = randomsplit(data)
+        torch.save(split_edge, file_path)
         print(f"save split edges to {file_path}")
+    data.edge_index = to_undirected(split_edge["train"]["edge"].t())
+    data.num_features = data.x.shape[0] if data.x is not None else 0
     print("-"*20)
     print(f"train: {split_edge['train']['edge'].shape[0]}")
     print(f"{split_edge['train']['edge'][:10,:]}")
@@ -132,14 +144,6 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
     print(f"test: {split_edge['test']['edge'].shape[0]}")
     print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
     return data, split_edge
-
-
-def make_edge_index(pos_train_edges):
-    """
-        pos_train_edges: torch.tensor, shape [num_edges, 2]
-    """
-    edge_index = torch.cat([pos_train_edges, pos_train_edges.flip(1)], dim=0).t()
-    return edge_index
 
 
 def data_summary(name: str, data: Data, header=False, latex=False):
@@ -199,8 +203,14 @@ def initialize(data, method):
         else:
             raise NotImplementedError
     else:
-        input_size = data.x.shape[1]
+        input_size = data.num_features
     return data, input_size
+
+def initial_embedding(data, hidden_channels, device):
+    embedding= torch.nn.Embedding(data.num_nodes, hidden_channels).to(device)
+    torch.nn.init.xavier_uniform_(embedding.weight)
+    return embedding
+
 
 def create_input(data):
     if hasattr(data, 'emb') and data.emb is not None:
@@ -208,4 +218,27 @@ def create_input(data):
     else:
         x = data.x
     return x
+
+
+# adopted from "https://github.com/melifluos/subgraph-sketching/tree/main"
+def filter_by_year(data, split_edge, year):
+    """
+    remove edges before year from data and split edge
+    @param data: pyg Data, pyg SplitEdge
+    @param split_edges:
+    @param year: int first year to use
+    @return: pyg Data, pyg SplitEdge
+    """
+    selected_year_index = torch.reshape(
+        (split_edge['train']['year'] >= year).nonzero(as_tuple=False), (-1,))
+    split_edge['train']['edge'] = split_edge['train']['edge'][selected_year_index]
+    split_edge['train']['weight'] = split_edge['train']['weight'][selected_year_index]
+    split_edge['train']['year'] = split_edge['train']['year'][selected_year_index]
+    train_edge_index = split_edge['train']['edge'].t()
+    # create adjacency matrix
+    new_edges = to_undirected(train_edge_index, split_edge['train']['weight'], reduce='add')
+    new_edge_index, new_edge_weight = new_edges[0], new_edges[1]
+    data.edge_index = new_edge_index
+    data.edge_weight = new_edge_weight.unsqueeze(-1)
+    return data, split_edge
     

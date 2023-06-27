@@ -4,10 +4,11 @@ import torch.nn.functional as F
 from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
                                 global_add_pool, global_max_pool,
                                 global_mean_pool, global_sort_pool)
-from torch_sparse import SparseTensor
+from torch_sparse import SparseTensor, matmul
+from torch_scatter import scatter_add
 
 from Conv import Sage_conv
-from node_label import de_plus_finder
+from node_label import de_plus_finder, DotHash
 
 
 class MLP(nn.Module):
@@ -49,7 +50,7 @@ class MLP(nn.Module):
         for layer in self.layers:
             layer.reset_parameters()
 
-    def forward(self, feats):
+    def forward(self, feats, adj_t=None):
         h = feats
         for l, layer in enumerate(self.layers):
             h = layer(h)
@@ -62,28 +63,46 @@ class MLP(nn.Module):
 
 class GCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout):
+                 dropout, use_feature=True, embedding=None):
         super(GCN, self).__init__()
 
-        self.convs = torch.nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels, cached=True))
-        for _ in range(num_layers - 2):
-            self.convs.append(
-                GCNConv(hidden_channels, hidden_channels, cached=True))
-        self.convs.append(GCNConv(hidden_channels, out_channels, cached=True))
-
+        self.use_feature = use_feature
+        self.embedding = embedding
         self.dropout = dropout
+        self.input_size = 0
+        if self.use_feature:
+            self.input_size += in_channels
+            self.feat_encode = get_encoder(in_channels, self.dropout)
+        if self.embedding is not None:
+            self.input_size += embedding.embedding_dim
+            self.embedding_encode = get_encoder(embedding.embedding_dim, self.dropout)
+        self.convs = torch.nn.ModuleList()
+        
+        if self.input_size > 0:
+            self.convs.append(GCNConv(self.input_size, hidden_channels, cached=False))
+            for _ in range(num_layers - 2):
+                self.convs.append(
+                    GCNConv(hidden_channels, hidden_channels, cached=False))
+            self.convs.append(GCNConv(hidden_channels, out_channels, cached=False))
+
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
 
     def forward(self, x, adj_t):
-        for conv in self.convs[:-1]:
-            x = conv(x, adj_t)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj_t)
+        if self.input_size > 0:
+            xs = []
+            if self.use_feature:
+                xs.append(self.feat_encode(x))
+            if self.embedding is not None:
+                xs.append(self.embedding_encode(self.embedding.weight))
+            x = torch.cat(xs, dim=1)
+            for conv in self.convs:
+                x = conv(x, adj_t)
+                # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
+                x = F.dropout(x, p=self.dropout, training=self.training)
+            # x = self.convs[-1](x, adj_t) # Note: since it's not the last layer we may still apply dropout
         return x
         
 class SAGE(torch.nn.Module):
@@ -277,23 +296,24 @@ class Teacher_LinkPredictor(torch.nn.Module):
 
 class EfficientNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, mask_target=False, dgcnn=False, use_feature=False):
+                 dropout, num_hops=2, dgcnn=False, use_degree='none'):
         super(EfficientNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
-        self.mask_target = mask_target
         self.dgcnn = dgcnn
-        self.use_feature = use_feature
-        if not self.use_feature:
-            in_channels = 0
+        self.in_channels = in_channels
+        self.use_degree = use_degree
+        if self.use_degree == 'mlp':
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, dropout, norm_type="batch")
 
         self.max_z = 4
         self.z_embedding = nn.Embedding(self.max_z, hidden_channels)
         if self.dgcnn: # TODO: if enable DGCNN, GNN encoding may require tanh as discussed in the paper
                        #       Check why dgcnn sometimes run OOM
             self.k = 45 # TODO: dynamic determine the number of nodes to be held for each target edge
-            total_latent_dim =  hidden_channels + in_channels
+            self.struct_dim = 5
+            total_latent_dim =  self.struct_dim + in_channels
             conv1d_channels = [16, 32]
             conv1d_kws = [total_latent_dim, 5]
             self.conv1 = nn.Conv1d(1, conv1d_channels[0], conv1d_kws[0],
@@ -304,12 +324,18 @@ class EfficientNodeLabelling(torch.nn.Module):
             dense_dim = int((self.k - 2) / 2 + 1)
             dense_dim = (dense_dim - conv1d_kws[1] + 1) * conv1d_channels[1]
         else:
-            dense_dim = hidden_channels + in_channels
+            self.struct_dim = 5
+            dense_dim = self.struct_dim + in_channels
         self.lins = torch.nn.ModuleList()
         self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
         for _ in range(num_layers - 2):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
+
+        self.struct_encode = get_encoder(self.struct_dim, self.dropout)
+        self.cached_adj2_return = None
+        self.cached_adj2 = None
+        # self.dothash = DotHash(torchhd_style=True, prop_type="exact")
 
 
     def reset_parameters(self):
@@ -327,41 +353,69 @@ class EfficientNodeLabelling(torch.nn.Module):
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
         """
+        if self.training:
+            (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), _ = de_plus_finder(adj, edges)
+        else: # during testing we can cache the adj2
+            if self.cached_adj2_return is None:
+                (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2) = de_plus_finder(adj, edges, cached_adj2_return=None, cached_adj2=None)
+                self.cached_adj2_return = adj2_return
+                self.cached_adj2 = adj2
+            else:
+                (l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2), (adj2_return, adj2) = de_plus_finder(adj, edges, cached_adj2_return=self.cached_adj2_return, cached_adj2=self.cached_adj2)
         
-        l_0_0, l_1_1, l_1_2, l_2_1, l_1_inf, l_inf_1, l_2_2, l_2_inf, l_inf_2 = de_plus_finder(adj, edges, mask_target=self.mask_target)
         # concatenate the structural embedding
-        z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
-                       [(1,1)]*l_1_1.nnz()+
-                       [(1,2)]*l_1_2.nnz()+
-                       [(2,1)]*l_2_1.nnz()+
-                       [(1,3)]*l_1_inf.nnz()+
-                       [(3,1)]*l_inf_1.nnz()+
-                       [(2,2)]*l_2_2.nnz()+
-                       [(2,3)]*l_2_inf.nnz()+
-                       [(3,2)]*l_inf_2.nnz()).to(x.device)
-        z_emb = self.z_embedding(z).sum(dim=1)
-        batch, node_ids = torch.concat([get_node_ids(l_0_0),
-                                        get_node_ids(l_1_1),
-                                        get_node_ids(l_1_2),
-                                        get_node_ids(l_2_1),
-                                        get_node_ids(l_1_inf),
-                                        get_node_ids(l_inf_1),
-                                        get_node_ids(l_2_2),
-                                        get_node_ids(l_2_inf),
-                                        get_node_ids(l_inf_2)], dim=1)
-        x_all =  z_emb
-
-        # x = x[node_ids]
-        # x = torch.cat([x, z_emb], dim=1)
-        
-        if self.dgcnn:
-            out = self.dgcnn_pooling(x_all, batch)
+        # z = torch.LongTensor([(0,0)]*l_0_0.nnz()+
+        #                [(1,1)]*l_1_1.nnz()+
+        #                [(1,2)]*l_1_2.nnz()+
+        #                [(2,1)]*l_2_1.nnz()+
+        #                [(1,3)]*l_1_inf.nnz()+
+        #                [(3,1)]*l_inf_1.nnz()+
+        #                [(2,2)]*l_2_2.nnz()+
+        #                [(2,3)]*l_2_inf.nnz()+
+        #                [(3,2)]*l_inf_2.nnz()).to(x.device)
+        # z_emb = self.z_embedding(z).sum(dim=1)
+        # batch, node_ids = torch.concat([get_node_ids(l_0_0),
+        #                                 get_node_ids(l_1_1),
+        #                                 get_node_ids(l_1_2),
+        #                                 get_node_ids(l_2_1),
+        #                                 get_node_ids(l_1_inf),
+        #                                 get_node_ids(l_inf_1),
+        #                                 get_node_ids(l_2_2),
+        #                                 get_node_ids(l_2_inf),
+        #                                 get_node_ids(l_inf_2)], dim=1)
+        # x_all =  z_emb
+        if self.use_degree == 'none':
+            node_weight = None
+        elif self.use_degree == 'mlp': # 'mlp' for now
+            xs = []
+            if x is not None:
+                xs.append(x)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
+            xs.append(degree)
+            node_weight_feat = torch.cat(xs, dim=1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1)
         else:
-            out = global_mean_pool(x_all, batch)
-        if self.use_feature:
-            x_i = x[edges[0]]
-            x_j = x[edges[1]]
-            x = torch.cat([x_i*x_j, out], dim=1)
+            # AA or RA
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
+            if self.use_degree == 'AA':
+                node_weight = torch.reciprocal(torch.log(degree))
+            elif self.use_degree == 'RA':
+                node_weight = torch.reciprocal(degree)
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
+
+        dim_size = edges.size(1)
+        c_1_1 = get_count(l_1_1, dim_size, node_weight)
+        c_1_2 = get_count(l_1_2, dim_size, node_weight) + get_count(l_2_1, dim_size, node_weight)
+        c_1_inf = get_count(l_1_inf, dim_size, node_weight) + get_count(l_inf_1, dim_size, node_weight)
+        c_2_2 = get_count(l_2_2, dim_size, node_weight)
+        c_2_inf = get_count(l_2_inf, dim_size, node_weight) + get_count(l_inf_2, dim_size, node_weight)
+
+        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = self.dothash(edges, adj, node_weight=node_weight)
+
+        out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
+        out = self.struct_encode(out)
+        if self.in_channels > 0:
+            x = torch.cat([x[edges[0]]*x[edges[1]], out], dim=1)
         else:
             x = out
         for lin in self.lins[:-1]:
@@ -383,7 +437,109 @@ class EfficientNodeLabelling(torch.nn.Module):
         return x
 
 
+class DotProductLabelling(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, num_layers,
+                 dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
+                 dothash_dim=1024, minimum_degree_onehot=-1):
+        super(DotProductLabelling, self).__init__()
+
+        self.in_channels = in_channels
+        self.dropout = dropout
+        self.num_hops = num_hops
+        self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
+        self.torchhd_style=torchhd_style
+        self.use_degree = use_degree
+        if self.use_degree == 'mlp':
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, dropout, norm_type="batch")
+        if self.prop_type == 'prop_only':
+            struct_dim = 4
+        elif self.prop_type == 'exact':
+            struct_dim = 5
+        elif self.prop_type == 'combine':
+            struct_dim = 9
+        self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+                               minimum_degree_onehot= minimum_degree_onehot)
+        self.struct_encode = get_encoder(struct_dim, self.dropout)
+
+        dense_dim = struct_dim + in_channels
+        self.lins = torch.nn.ModuleList()
+        self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
+        for _ in range(num_layers - 2):
+            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
+        self.lins.append(torch.nn.Linear(hidden_channels, 1))
+
+
+    def reset_parameters(self):
+        for lin in self.lins:
+            lin.reset_parameters()
+    
+    def forward(self, x, adj, edges):
+        """
+        Args:
+            x: [N, in_channels] node embedding after GNN
+            adj: [N, N] adjacency matrix
+            edges: [2, E] target edges
+        """
+        if self.use_degree == 'none':
+            node_weight = None
+        elif self.use_degree == 'mlp': # 'mlp' for now
+            xs = []
+            if x is not None:
+                xs.append(x)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
+            xs.append(degree)
+            node_weight_feat = torch.cat(xs, dim=1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1)
+        else:
+            # AA or RA
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
+            if self.use_degree == 'AA':
+                node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
+            elif self.use_degree == 'RA':
+                node_weight = torch.sqrt(torch.reciprocal(degree))
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
+
+        propped = self.dothash(edges, adj, node_weight=node_weight)
+        out = torch.stack([*propped], dim=1)
+        out = self.struct_encode(out)
+
+        if self.in_channels > 0:
+            x_i = x[edges[0]]
+            x_j = x[edges[1]]
+            x = torch.cat([x_i*x_j, out], dim=1)
+        else:
+            x = out
+        for lin in self.lins[:-1]:
+            x = lin(x)
+            x = F.relu(x)
+            hidden = x
+            x = F.dropout(x, p=self.dropout, training=self.training)
+        logit = self.lins[-1](x)
+        return logit
+
+
+
+
+
 
 def get_node_ids(l:SparseTensor):
     row, col, _ = l.coo()
     return torch.stack([row, col], dim=0)
+
+def get_count(l:SparseTensor, dim_size:int, weight=None):
+    row,col = get_node_ids(l)
+    if weight is None:
+        weight = torch.ones_like(row)
+    else:
+        weight = weight[row]
+    count = scatter_add(weight, row, dim_size=dim_size)
+    return count
+
+def get_encoder(dim, dropout):
+    struct_encode = nn.Sequential(
+                nn.Linear(dim, dim),
+                nn.BatchNorm1d(dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+    return struct_encode
