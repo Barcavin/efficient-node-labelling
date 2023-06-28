@@ -318,12 +318,16 @@ def main():
             if epoch % args.log_steps == 0:
                 for key, result in results.items():
                     valid_hits, test_hits = result
-                    print(key)
-                    print(f'Run: {run + 1:02d}, '
-                            f'Epoch: {epoch:02d}, '
-                            f'Loss: {loss:.4f}, '
-                            f'Valid: {100 * valid_hits:.2f}%, '
+                    to_print = (f'Run: {run + 1:02d}, ' +
+                            f'Epoch: {epoch:02d}, '+
+                            f'Loss: {loss:.4f}, '+
+                            f'Valid: {100 * valid_hits:.2f}%, '+
                             f'Test: {100 * test_hits:.2f}%')
+                    print(key)
+                    print(to_print)
+                    with open(final_log_path, 'a') as f:
+                        print(key, file=f)
+                        print(to_print, file=f)
                 print('---')
 
             if cnt_wait >= args.patience:

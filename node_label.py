@@ -33,9 +33,7 @@ class DotHash(torch.nn.Module):
         elif self.prop_type == "exact":
             return self.propagation(edges, adj_t, node_weight)
         elif self.prop_type == "combine":
-            exact = self.propagation(edges, adj_t, node_weight)
-            prop_only = self.propagation_only(edges, adj_t, node_weight)
-            return exact + prop_only
+            return self.propagation_combine(edges, adj_t, node_weight)
 
     def subgraph(self, edges: Tensor, adj_t: SparseTensor):
         row,col = edges
@@ -139,6 +137,50 @@ class DotHash(torch.nn.Module):
         # count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
         # count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
         return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf
+    
+    def propagation_combine(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        # get the 2-hop subgraph of the target edges
+        adj_t, edges, subset = self.subgraph(edges, adj_t)
+        node_weight = node_weight[subset] if node_weight is not None else None
+        x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
+
+        one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        subset = edges.view(-1) # flatten the target nodes [row, col]
+
+        # size: [(2 x num_target_edges(row,col)) , total_num_nodes_in_2_hop_subgraph ]
+        # one_hop_adj = one_hop_adj[subset] # not subsetting adj because two-iter propagation needs all nodes embedding
+        two_hop_adj = two_hop_adj[subset]
+
+        degree_one_hop_subgraph_nodes = one_hop_adj.sum(dim=1)
+        degree_one_hop = degree_one_hop_subgraph_nodes[subset]
+        degree_one_hop = degree_one_hop.view(2, edges.size(1))
+        degree_two_hop = two_hop_adj.sum(dim=1)
+        degree_two_hop = degree_two_hop.view(2, edges.size(1))
+
+        one_hop_x_subgraph_nodes = matmul(one_hop_adj, x)
+        two_iter_x = matmul(one_hop_adj[subset], one_hop_x_subgraph_nodes)
+        one_hop_x = one_hop_x_subgraph_nodes[subset]
+        two_hop_x = matmul(two_hop_adj, x) # size: [(2 x num_target_edges(row,col)) , dim]
+
+        one_hop_x = one_hop_x.view(2, edges.size(1), -1)
+        two_hop_x = two_hop_x.view(2, edges.size(1), -1)
+        two_iter_x = two_iter_x.view(2, edges.size(1), -1)
+
+        count_1_1 = dot_product(one_hop_x[0,:,:], one_hop_x[1,:,:])
+        count_1_2 = dot_product(one_hop_x[0,:,:] , two_hop_x[1,:,:]) + dot_product(two_hop_x[0,:,:] , one_hop_x[1,:,:])
+        count_2_2 = dot_product(two_hop_x[0,:,:] , two_hop_x[1,:,:])
+
+        count_1_inf = degree_one_hop[0,:] + degree_one_hop[1,:] - 2 * count_1_1 - count_1_2
+        count_2_inf = degree_two_hop[0,:] + degree_two_hop[1,:] - 2 * count_2_2 - count_1_2
+
+        # combine part
+        comb_count_1_2 = dot_product(one_hop_x[0,:,:] , two_iter_x[1,:,:]) + dot_product(two_iter_x[0,:,:] , one_hop_x[1,:,:])
+        comb_count_2_2 = dot_product((two_iter_x[0,:,:] - degree_one_hop[0,:].view(-1,1)*x[edges[0]]), # two-iter contains self return nodes, thus exclude them
+                                     (two_iter_x[1,:,:] - degree_one_hop[1,:].view(-1,1)*x[edges[1]]))
+        # count those 1 step and 2 step away from the target nodes. thus they form triangles
+        comb_count_triangle = dot_product(one_hop_x[0,:,:] , two_iter_x[0,:,:]) + dot_product(one_hop_x[1,:,:] , two_iter_x[1,:,:])
+
+        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, comb_count_1_2, comb_count_2_2, comb_count_triangle
 
     def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
         x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
