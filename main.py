@@ -26,7 +26,7 @@ from utils import ( get_dataset, data_summary,
 
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target):
+        mask_target, dataset_name):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
@@ -35,7 +35,11 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
-    neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
+    if dataset_name.startswith("ogbl"):
+        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), data.edge_index.size(), dtype=torch.long,
+                             device=device)
+    else:
+        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
@@ -298,7 +302,7 @@ def main():
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target)
+                         optimizer, args.batch_size, args.mask_target, args.dataset)
 
             results = test(encoder, predictor, data, split_edge,
                             evaluator, args.batch_size, args.use_valedges_as_input)
