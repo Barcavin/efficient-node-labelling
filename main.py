@@ -184,7 +184,6 @@ def main():
     parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--weight_decay', type=float, default=0)
-    parser.add_argument('--eval_steps', type=int, default=5)
     parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
     parser.add_argument('--runs', type=int, default=10)
