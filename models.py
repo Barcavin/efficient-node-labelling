@@ -106,51 +106,46 @@ class GCN(torch.nn.Module):
         return x
         
 class SAGE(torch.nn.Module):
-    def __init__(self, data_name, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, norm_type="none"):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 dropout, use_feature=True, embedding=None):
         super(SAGE, self).__init__()
 
-        self.convs = torch.nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.norm_type = norm_type
-        if self.norm_type == "batch":
-            self.norms.append(nn.BatchNorm1d(hidden_channels))
-        elif self.norm_type == "layer":
-            self.norms.append(nn.LayerNorm(hidden_channels))            
-
-        if data_name == "coauthor-physics":
-            self.convs.append(Sage_conv(in_channels, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(Sage_conv(hidden_channels, hidden_channels))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_channels))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_channels))
-            self.convs.append(Sage_conv(hidden_channels, out_channels))
-        else:
-            self.convs.append(SAGEConv(in_channels, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_channels))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_channels))
-            self.convs.append(SAGEConv(hidden_channels, out_channels))
-
+        self.use_feature = use_feature
+        self.embedding = embedding
         self.dropout = dropout
+        self.input_size = 0
+        if self.use_feature:
+            self.input_size += in_channels
+            self.feat_encode = get_encoder(in_channels, self.dropout)
+        if self.embedding is not None:
+            self.input_size += embedding.embedding_dim
+            self.embedding_encode = get_encoder(embedding.embedding_dim, self.dropout)
+        self.convs = torch.nn.ModuleList()
+        
+        if self.input_size > 0:
+            self.convs.append(SAGEConv(self.input_size, hidden_channels, cached=False))
+            for _ in range(num_layers - 2):
+                self.convs.append(
+                    SAGEConv(hidden_channels, hidden_channels, cached=False))
+            self.convs.append(SAGEConv(hidden_channels, out_channels, cached=False))
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
 
     def forward(self, x, adj_t):
-        for l, conv in enumerate(self.convs[:-1]):
-            x = conv(x, adj_t)
-            if self.norm_type != "none":
-                    x = self.norms[l](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj_t)
+        if self.input_size > 0:
+            xs = []
+            if self.use_feature:
+                xs.append(self.feat_encode(x))
+            if self.embedding is not None:
+                xs.append(self.embedding_encode(self.embedding.weight))
+            x = torch.cat(xs, dim=1)
+            for conv in self.convs:
+                x = conv(x, adj_t)
+                # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
+                x = F.dropout(x, p=self.dropout, training=self.training)
+            # x = self.convs[-1](x, adj_t) # Note: since it's not the last layer we may still apply dropout
         return x
 
 class APPNP_model(torch.nn.Module):
