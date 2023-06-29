@@ -152,8 +152,10 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
 def data_summary(name: str, data: Data, header=False, latex=False):
     num_nodes = data.num_nodes
     num_edges = data.num_edges
-    avg_degree = num_edges / num_nodes
-    max_degree = degree(data.edge_index[0], num_nodes, dtype=torch.long).max().item()
+    n_degree = degree(data.edge_index[0], num_nodes, dtype=torch.float)
+    avg_degree = n_degree.mean().item()
+    degree_std = n_degree.std().item()
+    max_degree = n_degree.max().long().item()
     density = num_edges / (num_nodes * (num_nodes - 1) / 2)
     if data.x is not None:
         attr_dim = data.x.shape[1]
@@ -167,13 +169,13 @@ def data_summary(name: str, data: Data, header=False, latex=False):
             \begin{table*}[ht]
             \begin{center}
             \resizebox{0.85\textwidth}{!}{
-            \begin{tabular}{lcccccc}
+            \begin{tabular}{lccccccc}
                 \toprule
-                \textbf{Dataset} & \textbf{\#Nodes} & \textbf{\#Edges} & \textbf{Avg. node deg.} & \textbf{Max. node deg.} & \textbf{Density} & \textbf{Attr. Dimension}\\
+                \textbf{Dataset} & \textbf{\#Nodes} & \textbf{\#Edges} & \textbf{Avg. node deg.} & \textbf{Std. node deg.} & \textbf{Max. node deg.} & \textbf{Density} & \textbf{Attr. Dimension}\\
                 \midrule"""
         latex_str += f"""
                 \\textbf{{{name}}}"""
-        latex_str += f""" & {num_nodes} & {num_edges} & {avg_degree:.2f} & {max_degree} & {density*100:.4f}\% & {attr_dim} \\\\"""
+        latex_str += f""" & {num_nodes} & {num_edges} & {avg_degree:.2f} & {degree_std:.2f} & {max_degree} & {density*100:.4f}\% & {attr_dim} \\\\"""
         latex_str += r"""
                 \midrule"""
         if header:
@@ -185,13 +187,13 @@ def data_summary(name: str, data: Data, header=False, latex=False):
             \end{table*}"""
         print(latex_str)
     else:
-        print("-"*30+'Dataset and Features'+"-"*40)
-        print("{:<10}|{:<10}|{:<10}|{:<15}|{:<15}|{:<10}|{:<15}"\
-            .format('Dataset','#Nodes','#Edges','Avg. node deg.','Max. node deg.', 'Density','Attr. Dimension'))
-        print("-"*90)
-        print("{:<10}|{:<10}|{:<10}|{:<15.2f}|{:<15}|{:<9.4f}%|{:<15}"\
-            .format(name, num_nodes, num_edges, avg_degree, max_degree, density*100, attr_dim))
-        print("-"*90)
+        print("-"*30+'Dataset and Features'+"-"*60)
+        print("{:<10}|{:<10}|{:<10}|{:<15}|{:<15}|{:<15}|{:<10}|{:<15}"\
+            .format('Dataset','#Nodes','#Edges','Avg. node deg.','Std. node deg.','Max. node deg.', 'Density','Attr. Dimension'))
+        print("-"*110)
+        print("{:<10}|{:<10}|{:<10}|{:<15.2f}|{:<15.2f}|{:<15}|{:<9.4f}%|{:<15}"\
+            .format(name, num_nodes, num_edges, avg_degree, degree_std, max_degree, density*100, attr_dim))
+        print("-"*110)
 
 def initialize(data, method):
     if data.x is None:
