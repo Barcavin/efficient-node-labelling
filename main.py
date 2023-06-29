@@ -1,3 +1,5 @@
+# python main.py --dataset=USAir --use_embedding=True --batch_size=1024 --mask_target=True --predictor=mlp --patience=20 --log_steps=1 --dataset_dir=../efficient-node-labelling/data --runs=1
+
 import argparse
 import os
 import sys
@@ -5,6 +7,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import scipy.sparse as ssp
 from sklearn.metrics import roc_auc_score
 import torch
 import torch.nn as nn
@@ -24,13 +27,23 @@ from node_label import spmdiff_
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
 
+def CN(A, edge_index, batch_size=1000000, **kwargs):
+    edge_index = edge_index.cpu()
+    # The Common Neighbor heuristic score.
+    link_loader = DataLoader(range(edge_index.size(1)), batch_size)
+    scores = []
+    for ind in link_loader:
+        src, dst = edge_index[0, ind], edge_index[1, ind]
+        cur_scores = np.array(np.sum(A[src].multiply(A[dst]), 1)).flatten()
+        scores.append(cur_scores)
+    return torch.FloatTensor(np.concatenate(scores, 0)), edge_index
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target, dataset_name):
+        mask_target, dataset_name, A):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
-    criterion = BCEWithLogitsLoss(reduction='mean')
+    criterion = nn.MSELoss()
     pos_train_edge = split_edge['train']['edge'].to(device)
     
     optimizer.zero_grad()
@@ -65,7 +78,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
         #                      device=device)
         neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
-        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
+        train_label = CN(A, train_edges)[0].to(device)
         out = predictor(h, adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
@@ -85,7 +98,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 @torch.no_grad()
 def test(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input):
+         batch_size, use_valedges_as_input, A):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -104,12 +117,18 @@ def test(encoder, predictor, data, split_edge, evaluator,
         out = predictor(h, adj_t, edge)
         pos_valid_preds += [out.squeeze().cpu()]
     pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
+    pos_valid_CN = CN(A, pos_valid_edge.t())[0]
 
     neg_valid_preds = []
     for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
         edge = neg_valid_edge[perm].t()
         neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
+    neg_valid_CN = CN(A, neg_valid_edge.t())[0]
+
+    valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
+    valid_CN = torch.cat((pos_valid_CN, neg_valid_CN), dim=0)
+    valid_loss = F.mse_loss(valid_pred, valid_CN)
 
     if use_valedges_as_input:
         adj_t = data.full_adj_t
@@ -120,36 +139,20 @@ def test(encoder, predictor, data, split_edge, evaluator,
         out = predictor(h, adj_t, edge)
         pos_test_preds += [out.squeeze().cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
+    pos_test_CN = CN(A, pos_test_edge.t())[0]
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
         neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
-    
-    results = {}
-    for K in [10, 20, 50, 100]:
-        evaluator.K = K
-        valid_hits = evaluator.eval({
-            'y_pred_pos': pos_valid_pred,
-            'y_pred_neg': neg_valid_pred,
-        })[f'hits@{K}']
-        test_hits = evaluator.eval({
-            'y_pred_pos': pos_test_pred,
-            'y_pred_neg': neg_test_pred,
-        })[f'hits@{K}']
+    neg_test_CN = CN(A, neg_test_edge.t())[0]
 
-        results[f'Hits@{K}'] = (valid_hits, test_hits)
-
-
-    valid_result = torch.cat((torch.ones(pos_valid_pred.size()), torch.zeros(neg_valid_pred.size())), dim=0)
-    valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
-
-    test_result = torch.cat((torch.ones(pos_test_pred.size()), torch.zeros(neg_test_pred.size())), dim=0)
     test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
-
-    results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
-
+    test_CN = torch.cat((pos_test_CN, neg_test_CN), dim=0)
+    test_loss = F.mse_loss(test_pred, test_CN)
+    
+    results = {"MSE":(-valid_loss.item(), -test_loss.item())}
     return results
 
 def main():
@@ -187,7 +190,7 @@ def main():
     parser.add_argument('--log_steps', type=int, default=20)
     parser.add_argument('--patience', type=int, default=100, help='number of patience steps for early stopping')
     parser.add_argument('--runs', type=int, default=10)
-    parser.add_argument('--metric', type=str, default='Hits@50', help='main evaluation metric')
+    parser.add_argument('--metric', type=str, default='MSE', help='main evaluation metric')
 
     # misc
     parser.add_argument('--log_dir', type=str, default='./logs')
@@ -223,11 +226,7 @@ def main():
     
     evaluator = Evaluator(name='ogbl-ddi')
     loggers = {
-        'Hits@10': Logger(args.runs, args),
-        'Hits@20': Logger(args.runs, args),
-        'Hits@50': Logger(args.runs, args),
-        'Hits@100': Logger(args.runs, args),
-        'AUC': Logger(args.runs, args),
+        'MSE': Logger(args.runs, args)
     }
 
     val_max = 0.0
@@ -250,6 +249,10 @@ def main():
                 else:
                     continue
         
+        num_nodes = data.num_nodes
+        edge_weight = torch.ones(data.edge_index.size(1), dtype=int)
+        A = ssp.csr_matrix((edge_weight, (data.edge_index[0], data.edge_index[1])), 
+                        shape=(num_nodes, num_nodes))
         data = data.to(device)
         if args.use_embedding:
             emb = initial_embedding(data, args.hidden_channels, device)
@@ -297,14 +300,14 @@ def main():
         optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
 
         cnt_wait = 0
-        best_val = 0.0
+        best_val = -99999999
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset)
+                         optimizer, args.batch_size, args.mask_target, args.dataset,A)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input)
+                            evaluator, args.batch_size, args.use_valedges_as_input,A)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
@@ -321,8 +324,8 @@ def main():
                     to_print = (f'Run: {run + 1:02d}, ' +
                             f'Epoch: {epoch:02d}, '+
                             f'Loss: {loss:.4f}, '+
-                            f'Valid: {100 * valid_hits:.2f}%, '+
-                            f'Test: {100 * test_hits:.2f}%')
+                            f'Valid: {-valid_hits:.2f}%, '+
+                            f'Test: {-test_hits:.2f}%')
                     print(key)
                     print(to_print)
                     with open(final_log_path, 'a') as f:
