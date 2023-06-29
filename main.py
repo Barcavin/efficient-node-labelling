@@ -38,8 +38,38 @@ def CN(A, edge_index, batch_size=1000000, **kwargs):
         scores.append(cur_scores)
     return torch.FloatTensor(np.concatenate(scores, 0)), edge_index
 
+def RA(A, edge_index, batch_size=1000000, **kwargs):
+    # The Resource Allocation heuristic score.
+    edge_index = edge_index.cpu()
+    multiplier = 1 / A.sum(axis=0)
+    multiplier[np.isinf(multiplier)] = 0
+    A_ = A.multiply(multiplier).tocsr()
+    link_loader = DataLoader(range(edge_index.size(1)), batch_size)
+    scores = []
+    for ind in link_loader:
+        src, dst = edge_index[0, ind], edge_index[1, ind]
+        cur_scores = np.array(np.sum(A[src].multiply(A_[dst]), 1)).flatten()
+        scores.append(cur_scores)
+    scores = np.concatenate(scores, 0)
+    return torch.FloatTensor(scores), edge_index
+
+def AA(A, edge_index, batch_size=1000000, **kwargs):
+    # The Adamic-Adar heuristic score.
+    edge_index = edge_index.cpu()
+    multiplier = 1 / np.log(A.sum(axis=0))
+    multiplier[np.isinf(multiplier)] = 0
+    A_ = A.multiply(multiplier).tocsr()
+    link_loader = DataLoader(range(edge_index.size(1)), batch_size)
+    scores = []
+    for ind in link_loader:
+        src, dst = edge_index[0, ind], edge_index[1, ind]
+        cur_scores = np.array(np.sum(A[src].multiply(A_[dst]), 1)).flatten()
+        scores.append(cur_scores)
+    scores = np.concatenate(scores, 0)
+    return torch.FloatTensor(scores), edge_index
+
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target, dataset_name, A):
+        mask_target, dataset_name, A, heuristics):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
@@ -78,7 +108,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
         #                      device=device)
         neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
-        train_label = CN(A, train_edges)[0].to(device)
+        train_label = eval(heuristics)(A, train_edges)[0].to(device)
         out = predictor(h, adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
@@ -98,7 +128,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 @torch.no_grad()
 def test(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input, A):
+         batch_size, use_valedges_as_input, A, heuristics):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -117,14 +147,14 @@ def test(encoder, predictor, data, split_edge, evaluator,
         out = predictor(h, adj_t, edge)
         pos_valid_preds += [out.squeeze().cpu()]
     pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
-    pos_valid_CN = CN(A, pos_valid_edge.t())[0]
+    pos_valid_CN = eval(heuristics)(A, pos_valid_edge.t())[0]
 
     neg_valid_preds = []
     for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
         edge = neg_valid_edge[perm].t()
         neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
-    neg_valid_CN = CN(A, neg_valid_edge.t())[0]
+    neg_valid_CN = eval(heuristics)(A, neg_valid_edge.t())[0]
 
     valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
     valid_CN = torch.cat((pos_valid_CN, neg_valid_CN), dim=0)
@@ -139,14 +169,14 @@ def test(encoder, predictor, data, split_edge, evaluator,
         out = predictor(h, adj_t, edge)
         pos_test_preds += [out.squeeze().cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
-    pos_test_CN = CN(A, pos_test_edge.t())[0]
+    pos_test_CN = eval(heuristics)(A, pos_test_edge.t())[0]
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
         neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
-    neg_test_CN = CN(A, neg_test_edge.t())[0]
+    neg_test_CN = eval(heuristics)(A, neg_test_edge.t())[0]
 
     test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
     test_CN = torch.cat((pos_test_CN, neg_test_CN), dim=0)
@@ -166,6 +196,7 @@ def main():
     parser.add_argument('--year', type=int, default=-1)
 
     # model setting
+    parser.add_argument('--heuristics', type=str, default='CN')
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
     parser.add_argument('--dropout', type=float, default=0.5)
@@ -304,10 +335,10 @@ def main():
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset,A)
+                         optimizer, args.batch_size, args.mask_target, args.dataset,A, args.heuristics)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input,A)
+                            evaluator, args.batch_size, args.use_valedges_as_input,A, args.heuristics)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
