@@ -128,7 +128,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 @torch.no_grad()
 def test(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input, A, heuristics):
+         batch_size, use_valedges_as_input, A, heuristics, average):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -141,45 +141,47 @@ def test(encoder, predictor, data, split_edge, evaluator,
     pos_test_edge = split_edge['test']['edge'].to(device)
     neg_test_edge = split_edge['test']['edge_neg'].to(device)
 
-    pos_valid_preds = []
-    for perm in DataLoader(range(pos_valid_edge.size(0)), batch_size):
-        edge = pos_valid_edge[perm].t()
-        out = predictor(h, adj_t, edge)
-        pos_valid_preds += [out.squeeze().cpu()]
-    pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
+    # pos_valid_preds = []
+    # for perm in DataLoader(range(pos_valid_edge.size(0)), batch_size):
+    #     edge = pos_valid_edge[perm].t()
+    #     out = predictor(h, adj_t, edge)
+    #     pos_valid_preds += [out.squeeze().cpu()]
+    # pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
     pos_valid_CN = eval(heuristics)(A, pos_valid_edge.t())[0]
 
-    neg_valid_preds = []
-    for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
-        edge = neg_valid_edge[perm].t()
-        neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
-    neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
+    # neg_valid_preds = []
+    # for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
+    #     edge = neg_valid_edge[perm].t()
+    #     neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
+    # neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
     neg_valid_CN = eval(heuristics)(A, neg_valid_edge.t())[0]
 
-    valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
+    # valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
     valid_CN = torch.cat((pos_valid_CN, neg_valid_CN), dim=0)
+    valid_pred = average.repeat(valid_CN.size(0))
     valid_loss = F.mse_loss(valid_pred, valid_CN)
 
     if use_valedges_as_input:
         adj_t = data.full_adj_t
         h = encoder(data.x, adj_t)
-    pos_test_preds = []
-    for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
-        edge = pos_test_edge[perm].t()
-        out = predictor(h, adj_t, edge)
-        pos_test_preds += [out.squeeze().cpu()]
-    pos_test_pred = torch.cat(pos_test_preds, dim=0)
+    # pos_test_preds = []
+    # for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
+    #     edge = pos_test_edge[perm].t()
+    #     out = predictor(h, adj_t, edge)
+    #     pos_test_preds += [out.squeeze().cpu()]
+    # pos_test_pred = torch.cat(pos_test_preds, dim=0)
     pos_test_CN = eval(heuristics)(A, pos_test_edge.t())[0]
 
-    neg_test_preds = []
-    for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
-        edge = neg_test_edge[perm].t()
-        neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
-    neg_test_pred = torch.cat(neg_test_preds, dim=0)
+    # neg_test_preds = []
+    # for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
+    #     edge = neg_test_edge[perm].t()
+    #     neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
+    # neg_test_pred = torch.cat(neg_test_preds, dim=0)
     neg_test_CN = eval(heuristics)(A, neg_test_edge.t())[0]
 
-    test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
+    # test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
     test_CN = torch.cat((pos_test_CN, neg_test_CN), dim=0)
+    test_pred = average.repeat(test_CN.size(0))
     test_loss = F.mse_loss(test_pred, test_CN)
     
     results = {"MSE":(-valid_loss.item(), -test_loss.item())}
@@ -246,8 +248,10 @@ def main():
     else:
         print(args)
     final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
+    args.encoder = "random"
     with open(final_log_path, 'w') as f:
         print(args, file=f)
+    args.encoder = "gcn"
     
     # Save command line input.
     cmd_input = 'python ' + ' '.join(sys.argv) + '\n'
@@ -332,13 +336,18 @@ def main():
 
         cnt_wait = 0
         best_val = -99999999
-
-        for epoch in range(1, 1 + args.epochs):
-            loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset,A, args.heuristics)
+        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), data.edge_index.size(), dtype=torch.long,
+                             device=device)
+        train_edges = torch.cat((split_edge['train']['edge'].to(device).t(), neg_edge_epoch), dim=-1)
+        average = eval(args.heuristics)(A, train_edges)[0].cpu().mean()
+        
+        for epoch in range(1):
+            # loss = train(encoder, predictor, data, split_edge,
+            #              optimizer, args.batch_size, args.mask_target, args.dataset,A, args.heuristics)
+            loss = 0
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input,A, args.heuristics)
+                            evaluator, args.batch_size, args.use_valedges_as_input,A, args.heuristics, average)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
