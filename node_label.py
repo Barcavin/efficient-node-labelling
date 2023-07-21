@@ -1,6 +1,7 @@
 import math
 from typing import List, Tuple
 import warnings
+from itertools import combinations
 
 import numpy as np
 import torch
@@ -26,6 +27,8 @@ class DotHash(torch.nn.Module):
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
         self.minimum_degree_onehot = minimum_degree_onehot
+
+        self.cached_hadamard = None
 
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None):
         if self.prop_type == "prop_only":
@@ -69,7 +72,7 @@ class DotHash(torch.nn.Module):
             node_vectors = torchhd.random(num_nodes - one_hot_dim, self.dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
         else:
-            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, self.dim), dtype=torch.float32, device=device)))
+            node_vectors = self.quasi_orthogonal_vectors(int(math.log2(self.dim)), 1, num_nodes - one_hot_dim).to(device)
         embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
 
         if node_weight is not None:
@@ -77,6 +80,29 @@ class DotHash(torch.nn.Module):
                                                    # thus, it requires the MLP to approximate one more sqrt?
             embedding.mul_(node_weight)
         return embedding
+
+    def quasi_orthogonal_vectors(self, log2_dim, mask_l, num_nodes):
+        n = 2 ** log2_dim
+        assert math.comb(n, mask_l)*n >= num_nodes
+        if self.cached_hadamard is None:
+            hadamard = generate_hadamard(n)
+            self.cached_hadamard = hadamard
+        else:
+            hadamard = self.cached_hadamard
+        hadamard = torch.FloatTensor(hadamard)
+        scale = math.sqrt(1/(n-mask_l))
+        hadamard.mul_(scale)
+        results = []
+        num=0
+        for mask_index in combinations(list(range(n)),mask_l):
+            masked_hadamard = hadamard.clone()
+            masked_hadamard[:,mask_index] = 0
+            results.append(masked_hadamard)
+            num += n
+            if num >= num_nodes:
+                break
+        results = torch.concat(results)[:num_nodes]
+        return results
 
     def get_two_hop_adj(self, adj_t):
         # adj_t = adj_t.fill_value_(1.0) # no need to fill value because of subgraph op
@@ -206,6 +232,37 @@ def dotproduct_bmm(tensor1, tensor2):
     return torch.bmm(tensor1.unsqueeze(1), tensor2.unsqueeze(2)).view(-1)
 
 dot_product = dotproduct_naive
+
+def generate_hadamard(n):
+ 
+    # Computing n = 2^M
+    # n = 2 ** M
+ 
+    # Initializing a matrix of order n
+    hadamard = [ [0] * n for _ in range(n)]
+     
+    # Initializing the 0th column and
+    # 0th row element as 1
+    hadamard[0][0] = 1
+     
+    k = 1
+    while (k  < n):
+ 
+        # Loop to copy elements to
+        # other quarters of the matrix
+        for i in range(k):
+            for j in range(k):
+                hadamard[i + k][j] = hadamard[i][j];
+                hadamard[i][j + k] = hadamard[i][j];
+                hadamard[i + k][j + k] = -hadamard[i][j];
+        k *= 2
+ 
+    # Displaying the final hadamard matrix
+    # for i in range(n):
+    #     for j in range(n):
+    #         print(hadamard[i][j], end = " ")
+    #     print()
+    return hadamard
 
 def sparsesample(adj: SparseTensor, deg: int) -> SparseTensor:
     '''
