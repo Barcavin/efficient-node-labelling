@@ -17,6 +17,8 @@ from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_
 
 import torchhd
 
+MINIMUM_DOTHASH_DIM=64
+
 class DotHash(torch.nn.Module):
     def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
@@ -56,20 +58,23 @@ class DotHash(torch.nn.Module):
             nodes_to_one_hot = degree >= self.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             # warnings.warn(f"number of nodes to one-hot: {one_hot_dim}", UserWarning)
-            embedding = torch.zeros(num_nodes, one_hot_dim + self.dim, device=device)
+            if one_hot_dim + MINIMUM_DOTHASH_DIM > self.dim:
+                raise ValueError(f"There are {int(one_hot_dim)} nodes with degree higher than {self.minimum_degree_onehot}, select a higher threshold to choose fewer nodes as hub")
+            embedding = torch.zeros(num_nodes, self.dim, device=device)
             one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
             embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
         else:
             embedding = torch.zeros(num_nodes, self.dim, device=device)
             nodes_to_one_hot = torch.zeros(num_nodes, dtype=torch.bool, device=device)
             one_hot_dim = 0
+        rand_dim = self.dim - one_hot_dim
 
         if self.torchhd_style:
-            scale = math.sqrt(1 / self.dim)
-            node_vectors = torchhd.random(num_nodes - one_hot_dim, self.dim, device=device)
+            scale = math.sqrt(1 / rand_dim)
+            node_vectors = torchhd.random(num_nodes - one_hot_dim, rand_dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
         else:
-            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, self.dim), dtype=torch.float32, device=device)))
+            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, rand_dim), dtype=torch.float32, device=device)))
         embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
 
         if node_weight is not None:
