@@ -61,8 +61,9 @@ class DotHash(torch.nn.Module):
             if one_hot_dim + MINIMUM_DOTHASH_DIM > self.dim:
                 raise ValueError(f"There are {int(one_hot_dim)} nodes with degree higher than {self.minimum_degree_onehot}, select a higher threshold to choose fewer nodes as hub")
             embedding = torch.zeros(num_nodes, self.dim, device=device)
-            one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
-            embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
+            if one_hot_dim>0:
+                one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
+                embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
         else:
             embedding = torch.zeros(num_nodes, self.dim, device=device)
             nodes_to_one_hot = torch.zeros(num_nodes, dtype=torch.bool, device=device)
