@@ -20,62 +20,60 @@ class MLP(nn.Module):
         output_dim,
         dropout_ratio,
         norm_type="none",
+        tailnormactdrop=False,
     ):
         super(MLP, self).__init__()
         self.num_layers = num_layers
         self.norm_type = norm_type
-        self.dropout = nn.Dropout(dropout_ratio)
-        self.layers = nn.ModuleList()
-        self.norms = nn.ModuleList()
-
+        self.tailnormactdrop = tailnormactdrop
+        self.layers = []
         if num_layers == 1:
             self.layers.append(nn.Linear(input_dim, output_dim))
+            if tailnormactdrop:
+                self.__build_normactdrop(self.layers, output_dim, dropout_ratio)
         else:
             self.layers.append(nn.Linear(input_dim, hidden_dim))
-            if self.norm_type == "batch":
-                self.norms.append(nn.BatchNorm1d(hidden_dim))
-            elif self.norm_type == "layer":
-                self.norms.append(nn.LayerNorm(hidden_dim))
-
+            self.__build_normactdrop(self.layers, hidden_dim, dropout_ratio)
             for i in range(num_layers - 2):
                 self.layers.append(nn.Linear(hidden_dim, hidden_dim))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_dim))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_dim))
-
+                self.__build_normactdrop(self.layers, hidden_dim, dropout_ratio)
             self.layers.append(nn.Linear(hidden_dim, output_dim))
+            if tailnormactdrop:
+                self.__build_normactdrop(self.layers, hidden_dim, dropout_ratio)
+        self.layers = nn.Sequential(*self.layers)
+
+    def __build_normactdrop(self, layers, dim, dropout):
+        if self.norm_type == "batch":
+            layers.append(nn.BatchNorm1d(dim))
+        elif self.norm_type == "layer":
+            layers.append(nn.LayerNorm(dim))
+        layers.append(nn.Dropout(dropout, inplace=True))
+        layers.append(nn.ReLU(inplace=True))
 
     def reset_parameters(self):
-        for layer in self.layers:
-            layer.reset_parameters()
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
 
     def forward(self, feats, adj_t=None):
-        h = feats
-        for l, layer in enumerate(self.layers):
-            h = layer(h)
-            if l != self.num_layers - 1:
-                if self.norm_type != "none":
-                    h = self.norms[l](h)
-                h = F.relu(h)
-                h = self.dropout(h)
-        return h
+        return self.layers(feats)
 
 class GCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, use_feature=True, embedding=None):
+                 dropout, use_feature=True, jk=False, embedding=None):
         super(GCN, self).__init__()
 
         self.use_feature = use_feature
         self.embedding = embedding
         self.dropout = dropout
         self.input_size = 0
+        self.jk = jk
+        if jk:
+            self.register_parameter("jkparams", nn.Parameter(torch.randn((num_layers,))))
         if self.use_feature:
             self.input_size += in_channels
-            self.feat_encode = get_encoder(in_channels, self.dropout)
         if self.embedding is not None:
             self.input_size += embedding.embedding_dim
-            self.embedding_encode = get_encoder(embedding.embedding_dim, self.dropout)
         self.convs = torch.nn.ModuleList()
         
         if self.input_size > 0:
@@ -87,22 +85,28 @@ class GCN(torch.nn.Module):
 
 
     def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
 
     def forward(self, x, adj_t):
         if self.input_size > 0:
             xs = []
             if self.use_feature:
-                xs.append(self.feat_encode(x))
+                xs.append(x)
             if self.embedding is not None:
-                xs.append(self.embedding_encode(self.embedding.weight))
+                xs.append(self.embedding.weight)
             x = torch.cat(xs, dim=1)
+            jkx = []
             for conv in self.convs:
                 x = conv(x, adj_t)
                 # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
-                x = F.dropout(x, p=self.dropout, training=self.training)
-            # x = self.convs[-1](x, adj_t) # Note: since it's not the last layer we may still apply dropout
+                if self.jk:
+                    jkx.append(x)
+            if self.jk: # JumpingKnowledge Connection
+                jkx = torch.stack(jkx, dim=0)
+                sftmax = self.jkparams.reshape(-1, 1, 1)
+                x = torch.sum(jkx*sftmax, dim=0)
         return x
         
 class SAGE(torch.nn.Module):
@@ -332,7 +336,7 @@ class EfficientNodeLabelling(torch.nn.Module):
             self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
         self.lins.append(torch.nn.Linear(hidden_channels, 1))
 
-        self.struct_encode = get_encoder(self.struct_dim, self.dropout)
+        self.struct_encode = MLP(1, self.struct_dim, self.struct_dim, self.struct_dim, self.dropout, "batch", tailnormactdrop=True)
         self.cached_adj2_return = None
         self.cached_adj2 = None
         # self.dothash = DotHash(torchhd_style=True, prop_type="exact")
@@ -439,18 +443,19 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
+                 feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
                  dothash_dim=1024, minimum_degree_onehot=-1):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
-        self.dropout = dropout
+        self.feat_dropout = feat_dropout
+        self.label_dropout = label_dropout
         self.num_hops = num_hops
         self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
         self.torchhd_style=torchhd_style
         self.use_degree = use_degree
         if self.use_degree == 'mlp':
-            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, dropout, norm_type="batch")
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch")
         if self.prop_type == 'prop_only':
             struct_dim = 4
         elif self.prop_type == 'exact':
@@ -459,19 +464,18 @@ class DotProductLabelling(torch.nn.Module):
             struct_dim = 8
         self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
-        self.struct_encode = get_encoder(struct_dim, self.dropout)
+        self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True)
 
         dense_dim = struct_dim + in_channels
-        self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(dense_dim, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels, 1))
+        if in_channels > 0:
+            self.feat_encode = MLP(1, in_channels, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True)
+        self.classifier = nn.Linear(dense_dim, 1)
 
 
     def reset_parameters(self):
-        for lin in self.lins:
-            lin.reset_parameters()
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
     
     def forward(self, x, adj, edges):
         """
@@ -492,29 +496,26 @@ class DotProductLabelling(torch.nn.Module):
             node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1) + 1 # like residual, can be learned as 0 if needed
         else:
             # AA or RA
-            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1) + 1 # degree at least 1. then log(degree) > 0.
             if self.use_degree == 'AA':
                 node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
             elif self.use_degree == 'RA':
                 node_weight = torch.sqrt(torch.reciprocal(degree))
-            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0) + 1 # like residual, can be learned as 0 if needed
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
 
         propped = self.dothash(edges, adj, node_weight=node_weight)
-        out = torch.stack([*propped], dim=1)
-        out = self.struct_encode(out)
+        propped_stack = torch.stack([*propped], dim=1)
+        out = self.struct_encode(propped_stack)
 
         if self.in_channels > 0:
             x_i = x[edges[0]]
             x_j = x[edges[1]]
-            x = torch.cat([x_i*x_j, out], dim=1)
+            x_ij = x_i * x_j
+            x_ij = self.feat_encode(x_ij)
+            x = torch.cat([x_ij, out], dim=1)
         else:
             x = out
-        for lin in self.lins[:-1]:
-            x = lin(x)
-            x = F.relu(x)
-            hidden = x
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        logit = self.lins[-1](x)
+        logit = self.classifier(x)
         return logit
 
 
@@ -534,12 +535,3 @@ def get_count(l:SparseTensor, dim_size:int, weight=None):
         weight = weight[row]
     count = scatter_add(weight, row, dim_size=dim_size)
     return count
-
-def get_encoder(dim, dropout):
-    struct_encode = nn.Sequential(
-                nn.Linear(dim, dim),
-                nn.BatchNorm1d(dim),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            )
-    return struct_encode
