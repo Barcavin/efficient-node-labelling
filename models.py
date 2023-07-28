@@ -531,7 +531,7 @@ class DotProductLabelling(torch.nn.Module):
             node_weight = None
         elif self.use_degree == 'mlp': # 'mlp' for now
             xs = []
-            if x is not None:
+            if self.in_channels > 0:
                 xs.append(x)
             degree = adj.sum(dim=1).view(-1,1).to(adj.device())
             xs.append(degree)
