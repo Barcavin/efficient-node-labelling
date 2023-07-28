@@ -165,6 +165,7 @@ def main():
     # model setting
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
+    parser.add_argument('--xdp', type=float, default=0.2)
     parser.add_argument('--feat_dropout', type=float, default=0.5)
     parser.add_argument('--label_dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
@@ -174,7 +175,8 @@ def main():
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP+exact","DP+prop_only","DP+combine"])  ##inner/mlp
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--jk', type=str2bool, default='True', help='whether to use Jumping Knowledge')
-    parser.add_argument('--use_embedding', type=str2bool, default='True', help='whether to train node embedding')
+    parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
+    parser.add_argument('--use_embedding', type=str2bool, default='False', help='whether to train node embedding')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
     parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
@@ -252,15 +254,20 @@ def main():
                 else:
                     continue
         
+        if args.minimum_degree_onehot > 0:
+            degree = data.adj_t.sum(dim=1)
+            nodes_to_one_hot = degree >= args.minimum_degree_onehot
+            one_hot_dim = nodes_to_one_hot.sum()
+            print(f"number of nodes to onehot: {int(one_hot_dim)}")
         data = data.to(device)
         if args.use_embedding:
             emb = initial_embedding(data, args.hidden_channels, device)
         else:
             emb = None
-        if args.encoder == 'gcn':
+        if 'gcn' in args.encoder:
             encoder = GCN(data.num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
-                        args.feat_dropout, args.use_feature, args.jk, emb).to(device)
+                        args.feat_dropout, args.xdp, args.use_feature, args.jk, args.encoder, emb).to(device)
         elif args.encoder == 'sage':
             encoder = SAGE(args.dataset, input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
@@ -292,12 +299,14 @@ def main():
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
                                     use_degree=args.use_degree, dothash_dim=args.dothash_dim,
-                                    minimum_degree_onehot=args.minimum_degree_onehot).to(device)
+                                    minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()
         parameters = list(encoder.parameters()) + list(predictor.parameters())
         optimizer = torch.optim.Adam(parameters, lr=args.lr, weight_decay=args.weight_decay)
+        total_params = sum(p.numel() for param in parameters for p in param)
+        print(f'Total number of parameters is {total_params}')
 
         cnt_wait = 0
         best_val = 0.0

@@ -4,11 +4,15 @@ import torch.nn.functional as F
 from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
                                 global_add_pool, global_max_pool,
                                 global_mean_pool, global_sort_pool)
-from torch_sparse import SparseTensor, matmul
+from torch_sparse import SparseTensor
 from torch_scatter import scatter_add
+from torch_sparse.matmul import spmm_max, spmm_mean, spmm_add
+
+from functools import partial
 
 from Conv import Sage_conv
 from node_label import de_plus_finder, DotHash
+from typing import Iterable, Final
 
 
 class MLP(nn.Module):
@@ -21,11 +25,13 @@ class MLP(nn.Module):
         dropout_ratio,
         norm_type="none",
         tailnormactdrop=False,
+        affine=True,
     ):
         super(MLP, self).__init__()
         self.num_layers = num_layers
         self.norm_type = norm_type
         self.tailnormactdrop = tailnormactdrop
+        self.affine = affine # the affine in batchnorm
         self.layers = []
         if num_layers == 1:
             self.layers.append(nn.Linear(input_dim, output_dim))
@@ -44,7 +50,7 @@ class MLP(nn.Module):
 
     def __build_normactdrop(self, layers, dim, dropout):
         if self.norm_type == "batch":
-            layers.append(nn.BatchNorm1d(dim))
+            layers.append(nn.BatchNorm1d(dim, affine=self.affine))
         elif self.norm_type == "layer":
             layers.append(nn.LayerNorm(dim))
         layers.append(nn.Dropout(dropout, inplace=True))
@@ -58,14 +64,41 @@ class MLP(nn.Module):
     def forward(self, feats, adj_t=None):
         return self.layers(feats)
 
+# Addpted from NCNC
+class PureConv(nn.Module):
+    aggr: Final[str]
+    def __init__(self, indim, outdim, aggr="gcn") -> None:
+        super().__init__()
+        self.aggr = aggr
+        if indim == outdim:
+            self.lin = nn.Identity()
+        else:
+            raise NotImplementedError
+
+    def forward(self, x, adj_t):
+        x = self.lin(x)
+        if self.aggr == "mean":
+            return spmm_mean(adj_t, x)
+        elif self.aggr == "max":
+            return spmm_max(adj_t, x)[0]
+        elif self.aggr == "sum":
+            return spmm_add(adj_t, x)
+        elif self.aggr == "gcn":
+            norm = torch.rsqrt_((1+adj_t.sum(dim=-1))).reshape(-1, 1)
+            x = norm * x
+            x = spmm_add(adj_t, x) + x
+            x = norm * x
+            return x
+
 class GCN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, use_feature=True, jk=False, embedding=None):
+                 dropout, xdropout, use_feature=True, jk=False, gcn_name='gcn', embedding=None):
         super(GCN, self).__init__()
 
         self.use_feature = use_feature
         self.embedding = embedding
         self.dropout = dropout
+        self.xdropout = xdropout
         self.input_size = 0
         self.jk = jk
         if jk:
@@ -77,11 +110,20 @@ class GCN(torch.nn.Module):
         self.convs = torch.nn.ModuleList()
         
         if self.input_size > 0:
-            self.convs.append(GCNConv(self.input_size, hidden_channels, cached=False))
+            if gcn_name == 'gcn':
+                conv_func = partial(GCNConv, cached=False)
+            elif 'pure' in gcn_name:
+                conv_func = partial(PureConv, aggr='gcn')
+            self.xemb = nn.Sequential(nn.Dropout(xdropout)) # nn.Identity()
+            if ("pure" in gcn_name or num_layers==0):
+                self.xemb.append(nn.Linear(self.input_size, hidden_channels))
+                self.xemb.append(nn.Dropout(dropout, inplace=True) if dropout > 1e-6 else nn.Identity())
+                self.input_size = hidden_channels
+            self.convs.append(conv_func(self.input_size, hidden_channels))
             for _ in range(num_layers - 2):
                 self.convs.append(
-                    GCNConv(hidden_channels, hidden_channels, cached=False))
-            self.convs.append(GCNConv(hidden_channels, out_channels, cached=False))
+                    conv_func(hidden_channels, hidden_channels))
+            self.convs.append(conv_func(hidden_channels, out_channels))
 
 
     def reset_parameters(self):
@@ -97,6 +139,7 @@ class GCN(torch.nn.Module):
             if self.embedding is not None:
                 xs.append(self.embedding.weight)
             x = torch.cat(xs, dim=1)
+            x = self.xemb(x)
             jkx = []
             for conv in self.convs:
                 x = conv(x, adj_t)
@@ -444,7 +487,7 @@ class EfficientNodeLabelling(torch.nn.Module):
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
-                 dothash_dim=1024, minimum_degree_onehot=-1):
+                 dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
@@ -455,7 +498,7 @@ class DotProductLabelling(torch.nn.Module):
         self.torchhd_style=torchhd_style
         self.use_degree = use_degree
         if self.use_degree == 'mlp':
-            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch")
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type == 'prop_only':
             struct_dim = 4
         elif self.prop_type == 'exact':
@@ -464,11 +507,11 @@ class DotProductLabelling(torch.nn.Module):
             struct_dim = 8
         self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
-        self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True)
+        self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 
         dense_dim = struct_dim + in_channels
         if in_channels > 0:
-            self.feat_encode = MLP(1, in_channels, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True)
+            self.feat_encode = MLP(1, in_channels, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
         self.classifier = nn.Linear(dense_dim, 1)
 
 
