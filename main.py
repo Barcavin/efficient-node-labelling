@@ -85,7 +85,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 @torch.no_grad()
 def test(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input):
+         batch_size, use_valedges_as_input, fast_inference):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -111,21 +111,34 @@ def test(encoder, predictor, data, split_edge, evaluator,
         neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
 
+    start_time = time.perf_counter()
     if use_valedges_as_input:
         adj_t = data.full_adj_t
         h = encoder(data.x, adj_t)
+    if fast_inference:
+        # caching
+        predictor(h, adj_t, None, cache_mode='build')
+        cache_mode='use'
+    else:
+        cache_mode=None
     pos_test_preds = []
     for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
         edge = pos_test_edge[perm].t()
-        out = predictor(h, adj_t, edge)
+        out = predictor(h, adj_t, edge, cache_mode=cache_mode)
         pos_test_preds += [out.squeeze().cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
-        neg_test_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
+        neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
+    end_time = time.perf_counter()
+    total_time = end_time - start_time
+    print(f'Inference for one epoch Took {total_time:.4f} seconds')
+    if fast_inference:
+        # delete cache
+        predictor(h, adj_t, None, cache_mode='delete')
     
     results = {}
     for K in [10, 20, 50, 100]:
@@ -181,6 +194,7 @@ def main():
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
     parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
     parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="the way to encode node weights")
+    parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -255,8 +269,8 @@ def main():
                     continue
         
         if args.minimum_degree_onehot > 0:
-            degree = data.adj_t.sum(dim=1)
-            nodes_to_one_hot = degree >= args.minimum_degree_onehot
+            d_v = degree(data.edge_index[0],data.num_nodes)
+            nodes_to_one_hot = d_v >= args.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             print(f"number of nodes to onehot: {int(one_hot_dim)}")
         data = data.to(device)
@@ -316,7 +330,7 @@ def main():
                          optimizer, args.batch_size, args.mask_target, args.dataset)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input)
+                            evaluator, args.batch_size, args.use_valedges_as_input, args.fast_inference)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]

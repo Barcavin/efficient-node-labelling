@@ -520,14 +520,18 @@ class DotProductLabelling(torch.nn.Module):
             if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
                 m.reset_parameters()
     
-    def forward(self, x, adj, edges):
+    def forward(self, x, adj, edges, cache_mode=None):
         """
         Args:
             x: [N, in_channels] node embedding after GNN
             adj: [N, N] adjacency matrix
             edges: [2, E] target edges
+            fast_inference: bool. If True, only caching the message-passing without calculating the structural features
         """
-        if self.use_degree == 'none':
+        if cache_mode in ["use","delete"]:
+            # no need to compute node_weight
+            node_weight = None
+        elif self.use_degree == 'none':
             node_weight = None
         elif self.use_degree == 'mlp': # 'mlp' for now
             xs = []
@@ -546,7 +550,11 @@ class DotProductLabelling(torch.nn.Module):
                 node_weight = torch.sqrt(torch.reciprocal(degree))
             node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
 
-        propped = self.dothash(edges, adj, node_weight=node_weight)
+        if cache_mode in ["build","delete"]:
+            propped = self.dothash(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
+            return
+        else:
+            propped = self.dothash(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
         propped_stack = torch.stack([*propped], dim=1)
         out = self.struct_encode(propped_stack)
 
