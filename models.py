@@ -292,7 +292,7 @@ class LinkPredictor(torch.nn.Module):
         for lin in self.lins:
             lin.reset_parameters()
 
-    def forward(self, x, adj, edges):
+    def forward(self, x, adj, edges, **kwargs):
         x_i = x[edges[0]]
         x_j = x[edges[1]]
         x = x_i * x_j
