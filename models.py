@@ -487,7 +487,8 @@ class EfficientNodeLabelling(torch.nn.Module):
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
-                 dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True):
+                 dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
+                 feature_combine="hadamard"):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
@@ -497,6 +498,7 @@ class DotProductLabelling(torch.nn.Module):
         self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
         self.torchhd_style=torchhd_style
         self.use_degree = use_degree
+        self.feature_combine = feature_combine
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type == 'prop_only':
@@ -511,7 +513,11 @@ class DotProductLabelling(torch.nn.Module):
 
         dense_dim = struct_dim + in_channels
         if in_channels > 0:
-            self.feat_encode = MLP(1, in_channels, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
+            if feature_combine == "hadamard":
+                feat_encode_input_dim = in_channels
+            elif feature_combine == "plus_minus":
+                feat_encode_input_dim = in_channels * 2
+            self.feat_encode = MLP(1, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
         self.classifier = nn.Linear(dense_dim, 1)
 
 
@@ -561,7 +567,10 @@ class DotProductLabelling(torch.nn.Module):
         if self.in_channels > 0:
             x_i = x[edges[0]]
             x_j = x[edges[1]]
-            x_ij = x_i * x_j
+            if self.feature_combine == "hadamard":
+                x_ij = x_i * x_j
+            elif self.feature_combine == "plus_minus":
+                x_ij = torch.cat([x_i+x_j, torch.abs(x_i-x_j)], dim=1)
             x_ij = self.feat_encode(x_ij)
             x = torch.cat([x_ij, out], dim=1)
         else:
