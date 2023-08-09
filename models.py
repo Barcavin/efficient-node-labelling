@@ -517,7 +517,7 @@ class DotProductLabelling(torch.nn.Module):
                 feat_encode_input_dim = in_channels
             elif feature_combine == "plus_minus":
                 feat_encode_input_dim = in_channels * 2
-            self.feat_encode = MLP(1, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
+            self.feat_encode = MLP(2, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
         self.classifier = nn.Linear(dense_dim, 1)
 
 
