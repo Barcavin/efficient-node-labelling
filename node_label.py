@@ -18,16 +18,18 @@ from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_
 import torchhd
 
 MINIMUM_DOTHASH_DIM=64
+MINIMUM_CLUSTER_ONEHOT_DIM=10
 
 class DotHash(torch.nn.Module):
-    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
+    def __init__(self, dim: int=1024, num_parts: int=0, prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
         self.dim = dim
-        self.torchhd_style = torchhd_style
+        self.num_parts = num_parts
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
         self.minimum_degree_onehot = minimum_degree_onehot
+        assert (num_parts <=0 ) or (minimum_degree_onehot < 0), "cannot use both num_parts and minimum_degree_onehot"
 
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None, cache_mode=None):
         if self.training and (cache_mode is not None):
@@ -70,24 +72,53 @@ class DotHash(torch.nn.Module):
             if one_hot_dim>0:
                 one_hot_embedding = F.one_hot(torch.arange(0, one_hot_dim)).float().to(device)
                 embedding[nodes_to_one_hot,:one_hot_dim] = one_hot_embedding
-        else:
-            embedding = torch.zeros(num_nodes, self.dim, device=device)
-            nodes_to_one_hot = torch.zeros(num_nodes, dtype=torch.bool, device=device)
-            one_hot_dim = 0
-        rand_dim = self.dim - one_hot_dim
+            rand_dim = self.dim - one_hot_dim
 
-        if self.torchhd_style:
             scale = math.sqrt(1 / rand_dim)
             node_vectors = torchhd.random(num_nodes - one_hot_dim, rand_dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
-        else:
-            node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, rand_dim), dtype=torch.float32, device=device)))
-        embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
+            embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
+        elif self.num_parts > 0:
+            _, partptr, perm = adj_t.partition(self.num_parts)
+            inv = perm.argsort()
 
+            embedding = torch.zeros(num_nodes, self.dim, device=device)
+            for idx in range(self.num_parts):
+                start = int(partptr[idx])
+                length = int(partptr[idx + 1]) - start
+                embedding[inv[start:start + length]] = self.cluster_onehot(length, MINIMUM_CLUSTER_ONEHOT_DIM, device)
+        else:
+            scale = math.sqrt(1 / self.dim)
+            embedding = torchhd.random(num_nodes, self.dim, device=device)
+            embedding.mul_(scale)  # make them unit vectors
+        
         if node_weight is not None:
             node_weight = node_weight.unsqueeze(1) # Note: not sqrt here because it can cause problem for MLP when output is negative
                                                    # thus, it requires the MLP to approximate one more sqrt?
             embedding.mul_(node_weight)
+        return embedding
+
+    
+    def cluster_onehot(self, num_nodes: int, one_hot_dim: int, device):
+        num_nodes_to_one_hot = min(self.dim // one_hot_dim, num_nodes)
+        total_one_hot_dim = num_nodes_to_one_hot * one_hot_dim
+        allocate_dim = torch.randperm(self.dim)[:total_one_hot_dim].reshape(num_nodes_to_one_hot, one_hot_dim)
+        node_vectors = torchhd.random(num_nodes_to_one_hot, one_hot_dim, device=device)
+        scale = math.sqrt(1 / one_hot_dim)
+        node_vectors.mul_(scale)  # make them unit vectors
+        embedding = torch.zeros(num_nodes, self.dim, device=device)
+        idx_perm = torch.randperm(num_nodes)
+        nodes_onehot_idx = idx_perm[:num_nodes_to_one_hot]
+        nodes_random_idx = idx_perm[num_nodes_to_one_hot:]
+
+        embedding_onehot = torch.zeros(num_nodes_to_one_hot, self.dim, device=device)
+        embedding_onehot[:, allocate_dim] = node_vectors
+        embedding[nodes_onehot_idx,:] = embedding_onehot
+
+        node_vectors = torchhd.random(num_nodes - num_nodes_to_one_hot, self.dim, device=device)
+        scale = math.sqrt(1 / self.dim)
+        node_vectors.mul_(scale)  # make them unit vectors
+        embedding[nodes_random_idx,:] = node_vectors
         return embedding
 
     def get_two_hop_adj(self, adj_t):

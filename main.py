@@ -192,7 +192,7 @@ def main():
     parser.add_argument('--use_embedding', type=str2bool, default='False', help='whether to train node embedding')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
     parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
-    parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
+    parser.add_argument('--num_parts', type=int, default=0, help='if >0, use partitioned graph for one-hot encoding')
     parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="the way to encode node weights")
     parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
 
@@ -311,7 +311,7 @@ def main():
             prop_type = args.predictor.split("+")[1]
             predictor = DotProductLabelling(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
-                                    prop_type=prop_type, torchhd_style=args.torchhd_style,
+                                    prop_type=prop_type, num_parts=args.num_parts,
                                     use_degree=args.use_degree, dothash_dim=args.dothash_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine).to(device)
 

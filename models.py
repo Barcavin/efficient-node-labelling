@@ -486,7 +486,7 @@ class EfficientNodeLabelling(torch.nn.Module):
 
 class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
+                 feat_dropout, label_dropout, num_hops=2, prop_type='exact', num_parts=0, use_degree='none',
                  dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True):
         super(DotProductLabelling, self).__init__()
 
@@ -495,7 +495,7 @@ class DotProductLabelling(torch.nn.Module):
         self.label_dropout = label_dropout
         self.num_hops = num_hops
         self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
-        self.torchhd_style=torchhd_style
+        self.num_parts=num_parts
         self.use_degree = use_degree
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
@@ -505,7 +505,7 @@ class DotProductLabelling(torch.nn.Module):
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 8
-        self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+        self.dothash = DotHash(dothash_dim, num_parts=self.num_parts, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 
