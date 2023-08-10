@@ -103,6 +103,7 @@ class DotHash(torch.nn.Module):
         num_nodes_to_one_hot = min(self.dim // one_hot_dim, num_nodes)
         total_one_hot_dim = num_nodes_to_one_hot * one_hot_dim
         allocate_dim = torch.randperm(self.dim)[:total_one_hot_dim].reshape(num_nodes_to_one_hot, one_hot_dim)
+        allocate_dim = (torch.arange(0, num_nodes_to_one_hot).unsqueeze(1), allocate_dim)
         node_vectors = torchhd.random(num_nodes_to_one_hot, one_hot_dim, device=device)
         scale = math.sqrt(1 / one_hot_dim)
         node_vectors.mul_(scale)  # make them unit vectors
@@ -112,7 +113,7 @@ class DotHash(torch.nn.Module):
         nodes_random_idx = idx_perm[num_nodes_to_one_hot:]
 
         embedding_onehot = torch.zeros(num_nodes_to_one_hot, self.dim, device=device)
-        embedding_onehot[:, allocate_dim] = node_vectors
+        embedding_onehot[allocate_dim] = node_vectors
         embedding[nodes_onehot_idx,:] = embedding_onehot
 
         node_vectors = torchhd.random(num_nodes - num_nodes_to_one_hot, self.dim, device=device)
