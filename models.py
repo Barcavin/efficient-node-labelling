@@ -153,51 +153,63 @@ class GCN(torch.nn.Module):
         return x
         
 class SAGE(torch.nn.Module):
-    def __init__(self, data_name, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, norm_type="none"):
+    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
+                 dropout, xdropout, use_feature=True, jk=False, embedding=None):
         super(SAGE, self).__init__()
 
+        self.use_feature = use_feature
+        self.embedding = embedding
+        self.dropout = dropout
+        self.xdropout = xdropout
+        self.input_size = 0
+        self.jk = jk
+        if jk:
+            self.register_parameter("jkparams", nn.Parameter(torch.randn((num_layers,))))
+        if self.use_feature:
+            self.input_size += in_channels
+        if self.embedding is not None:
+            self.input_size += embedding.embedding_dim
         self.convs = torch.nn.ModuleList()
-        self.norms = nn.ModuleList()
-        self.norm_type = norm_type
-        if self.norm_type == "batch":
-            self.norms.append(nn.BatchNorm1d(hidden_channels))
-        elif self.norm_type == "layer":
-            self.norms.append(nn.LayerNorm(hidden_channels))            
-
-        if data_name == "coauthor-physics":
-            self.convs.append(Sage_conv(in_channels, hidden_channels))
+        
+        if self.input_size > 0:
+            conv_func = partial(SAGEConv, cached=False)
+            self.xemb = nn.Sequential(nn.Dropout(xdropout)) # nn.Identity()
+            if num_layers==0:
+                self.xemb.append(nn.Linear(self.input_size, hidden_channels))
+                self.xemb.append(nn.Dropout(dropout, inplace=True) if dropout > 1e-6 else nn.Identity())
+                self.input_size = hidden_channels
+            self.convs.append(conv_func(self.input_size, hidden_channels))
             for _ in range(num_layers - 2):
-                self.convs.append(Sage_conv(hidden_channels, hidden_channels))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_channels))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_channels))
-            self.convs.append(Sage_conv(hidden_channels, out_channels))
-        else:
-            self.convs.append(SAGEConv(in_channels, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(SAGEConv(hidden_channels, hidden_channels))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_channels))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_channels))
-            self.convs.append(SAGEConv(hidden_channels, out_channels))
+                self.convs.append(
+                    conv_func(hidden_channels, hidden_channels))
+            self.convs.append(conv_func(hidden_channels, out_channels))
 
         self.dropout = dropout
 
     def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
 
     def forward(self, x, adj_t):
-        for l, conv in enumerate(self.convs[:-1]):
-            x = conv(x, adj_t)
-            if self.norm_type != "none":
-                    x = self.norms[l](x)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj_t)
+        if self.input_size > 0:
+            xs = []
+            if self.use_feature:
+                xs.append(x)
+            if self.embedding is not None:
+                xs.append(self.embedding.weight)
+            x = torch.cat(xs, dim=1)
+            x = self.xemb(x)
+            jkx = []
+            for conv in self.convs:
+                x = conv(x, adj_t)
+                # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
+                if self.jk:
+                    jkx.append(x)
+            if self.jk: # JumpingKnowledge Connection
+                jkx = torch.stack(jkx, dim=0)
+                sftmax = self.jkparams.reshape(-1, 1, 1)
+                x = torch.sum(jkx*sftmax, dim=0)
         return x
 
 class APPNP_model(torch.nn.Module):

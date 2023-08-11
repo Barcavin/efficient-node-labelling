@@ -284,9 +284,9 @@ def main():
                         args.hidden_channels, args.num_layers,
                         args.feat_dropout, args.xdp, args.use_feature, args.jk, args.encoder, emb).to(device)
         elif args.encoder == 'sage':
-            encoder = SAGE(args.dataset, input_size, args.hidden_channels,
+            encoder = SAGE(data.num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
-                        args.dropout).to(device)
+                        args.feat_dropout, args.xdp, args.use_feature, args.jk, emb).to(device)
         elif args.encoder == 'appnp':
             encoder = APPNP_model(input_size, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
