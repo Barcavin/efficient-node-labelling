@@ -187,6 +187,7 @@ def main():
     parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='minimum degree for onehot encoding during dothash to reduce variance')
     parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP+exact","DP+prop_only","DP+combine"])  ##inner/mlp
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
+    parser.add_argument('--feature_combine', type=str, default='hadamard', choices=['hadamard','plus_minus'], help='how to represent a link with two nodes features')
     parser.add_argument('--jk', type=str2bool, default='True', help='whether to use Jumping Knowledge')
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
     parser.add_argument('--use_embedding', type=str2bool, default='False', help='whether to train node embedding')
@@ -313,7 +314,8 @@ def main():
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
                                     use_degree=args.use_degree, dothash_dim=args.dothash_dim,
-                                    minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine).to(device)
+                                    minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
+                                    feature_combine=args.feature_combine).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()
