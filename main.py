@@ -212,6 +212,7 @@ def main():
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--data_split_only', type=str2bool, default='False')
     parser.add_argument('--print_summary', type=str, default='')
+    parser.add_argument('--misc', type=str, default='')
 
     args = parser.parse_args()
     # start time
