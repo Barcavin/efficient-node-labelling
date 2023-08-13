@@ -12,6 +12,9 @@ from datasketch import HyperLogLogPlusPlus, hyperloglog_const
 from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import add_self_loops
 
+from torch_sparse import SparseTensor
+from torch_geometric.utils import spmm
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -32,6 +35,9 @@ class MinhashPropagation(MessagePassing):
         out = self.propagate(edge_index, x=-x)
         return -out
 
+    def message_and_aggregate(self, adj_t: SparseTensor, x):
+        return spmm(adj_t, x, reduce=self.aggr)
+
 
 class HllPropagation(MessagePassing):
     def __init__(self):
@@ -41,6 +47,9 @@ class HllPropagation(MessagePassing):
     def forward(self, x, edge_index):
         out = self.propagate(edge_index, x=x)
         return out
+    
+    def message_and_aggregate(self, adj_t: SparseTensor, x):
+        return spmm(adj_t, x, reduce=self.aggr)
 
 
 class ElphHashes(object):
@@ -145,6 +154,7 @@ class ElphHashes(object):
         """
         device = edge_index.device
         hash_edge_index, _ = add_self_loops(edge_index)
+        adj_t = SparseTensor.from_edge_index(hash_edge_index, sparse_sizes=(num_nodes, num_nodes))
         cards = torch.zeros((num_nodes, self.max_hops))
         node_hashings_table = {}
         for k in range(self.max_hops + 1):
@@ -156,9 +166,9 @@ class ElphHashes(object):
                 node_hashings_table[k]['minhash'] = self.initialise_minhash(num_nodes).to(device)
                 node_hashings_table[k]['hll'] = self.initialise_hll(num_nodes).to(device)
             else:
-                node_hashings_table[k]['hll'] = self.hll_prop(node_hashings_table[k - 1]['hll'], hash_edge_index)
+                node_hashings_table[k]['hll'] = self.hll_prop(node_hashings_table[k - 1]['hll'], adj_t)
                 node_hashings_table[k]['minhash'] = self.minhash_prop(node_hashings_table[k - 1]['minhash'],
-                                                                      hash_edge_index)
+                                                                      adj_t)
                 cards[:, k - 1] = self.hll_count(node_hashings_table[k]['hll'])
             logger.info(f'{k} hop hash generation ran in {time() - start} s')
         return node_hashings_table, cards
