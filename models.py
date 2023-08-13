@@ -14,6 +14,12 @@ from Conv import Sage_conv
 from node_label import de_plus_finder, DotHash
 from typing import Iterable, Final
 
+MISC = {
+    0: [0], # (1,1)
+    1: [1,3,5], # (1,2) (1,2)* (1,0)
+    2: [2,4,6], # (2,2) (2,2)* (2,0)
+    3: [7], # triangle
+}
 
 class MLP(nn.Module):
     def __init__(
@@ -500,7 +506,7 @@ class DotProductLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
                  dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
-                 feature_combine="hadamard"):
+                 feature_combine="hadamard",misc=""):
         super(DotProductLabelling, self).__init__()
 
         self.in_channels = in_channels
@@ -511,6 +517,9 @@ class DotProductLabelling(torch.nn.Module):
         self.torchhd_style=torchhd_style
         self.use_degree = use_degree
         self.feature_combine = feature_combine
+        self.misc = misc
+        propped_to_concat_idx = self.misc.split(",")
+        self.propped_to_concat_idx = [int(i) for i in propped_to_concat_idx]
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type == 'prop_only':
@@ -518,7 +527,9 @@ class DotProductLabelling(torch.nn.Module):
         elif self.prop_type == 'exact':
             struct_dim = 5
         elif self.prop_type == 'combine':
-            struct_dim = 8
+            struct_dim = 0
+            for idx in self.propped_to_concat_idx:
+                struct_dim += len(MISC[idx])
         self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
@@ -573,7 +584,7 @@ class DotProductLabelling(torch.nn.Module):
             return
         else:
             propped = self.dothash(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
-        propped_stack = torch.stack([*propped], dim=1)
+        propped_stack = self.concat(propped)
         out = self.struct_encode(propped_stack)
 
         if self.in_channels > 0:
@@ -590,6 +601,10 @@ class DotProductLabelling(torch.nn.Module):
         logit = self.classifier(x)
         return logit
 
+    def concat(self, propped):
+        propped_to_concat = [propped[i] for MISC_idx in self.propped_to_concat_idx for i in MISC[MISC_idx]]
+        propped_stack = torch.stack(propped_to_concat, dim=1)
+        return propped_stack
 
 
 

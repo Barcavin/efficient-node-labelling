@@ -316,7 +316,7 @@ def main():
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
                                     use_degree=args.use_degree, dothash_dim=args.dothash_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
-                                    feature_combine=args.feature_combine).to(device)
+                                    feature_combine=args.feature_combine,misc=args.misc).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()
