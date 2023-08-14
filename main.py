@@ -278,7 +278,11 @@ def main():
             one_hot_dim = nodes_to_one_hot.sum()
             print(f"number of nodes to onehot: {int(one_hot_dim)}")
         # randomize the input features
-        data.x = torchhd.random(data.num_nodes, args.feature_channels)
+        if args.feature_channels == 0:
+            feature_channels = data.num_features
+        else:
+            feature_channels = args.feature_channels
+        data.x = torchhd.random(data.num_nodes, feature_channels)
         data = data.to(device)
         if args.use_embedding:
             emb = initial_embedding(data, args.hidden_channels, device)
