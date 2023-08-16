@@ -10,7 +10,7 @@ from torch import Tensor
 from torch_sparse import SparseTensor, matmul
 
 import scipy.sparse as ssp
-from scipy.sparse.csgraph import shortest_path
+from scipy.sparse.csgraph import shortest_path, dijkstra
 from torch_geometric.data import Data
 
 from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_index
@@ -47,7 +47,7 @@ class DotHash(torch.nn.Module):
         row,col = edges
         nodes = torch.cat((row,col),dim=-1)
         edge_index,_ = to_edge_index(adj_t)
-        subset, new_edge_index, inv, edge_mask = pyg_k_hop_subgraph(nodes, 2, edge_index=edge_index, 
+        subset, new_edge_index, inv, edge_mask = pyg_k_hop_subgraph(nodes, 3, edge_index=edge_index, 
                                                                     num_nodes=adj_t.size(0), relabel_nodes=True)
         # subset[inv] = nodes. The new node id is based on `subset`'s order.
         # inv means the new idx (in subset) of the old nodes in `nodes`
@@ -96,6 +96,28 @@ class DotHash(torch.nn.Module):
         adj_t_with_self_loop = adj_t.fill_diag(1)
         two_hop_adj = spmdiff_(one_and_two_hop_adj, adj_t_with_self_loop)
         return adj_t, two_hop_adj
+
+    def get_shortest_path_adj(self, adj_t, edges):
+        scipy_adj_t = adj_t.to_scipy(layout="csr")
+        device = edges.device
+        if edges.is_cuda:
+            edges_on_cpu = edges.clone().cpu().view(-1)
+        else:
+            edges_on_cpu = edges.clone().view(-1)
+        dist_matrix = dijkstra(csgraph=scipy_adj_t, 
+                       directed=False, 
+                       indices=edges_on_cpu, 
+                       return_predecessors=False,
+                       unweighted=True,
+                       limit=3,
+                       min_only=False,
+                      )
+        u, v, r = ssp.find(dist_matrix==2)
+        two_hop_adj = SparseTensor(row=torch.LongTensor(u), col=torch.LongTensor(v), sparse_sizes=adj_t.sparse_sizes()).to(device)
+
+        u, v, r = ssp.find(dist_matrix==3)
+        three_hop_adj = SparseTensor(row=torch.LongTensor(u), col=torch.LongTensor(v), sparse_sizes=adj_t.sparse_sizes()).to(device)
+        return adj_t, two_hop_adj, three_hop_adj
 
     def propagation(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
         # get the 2-hop subgraph of the target edges
@@ -157,6 +179,7 @@ class DotHash(torch.nn.Module):
         x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
 
         one_hop_adj, two_hop_adj = self.get_two_hop_adj(adj_t)
+        one_hop_adj, two_hop_adj, three_hop_adj, = self.get_shortest_path_adj(adj_t, edges)
         subset = edges.view(-1) # flatten the target nodes [row, col]
 
         # size: [(2 x num_target_edges(row,col)) , total_num_nodes_in_2_hop_subgraph ]
