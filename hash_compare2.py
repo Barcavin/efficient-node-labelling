@@ -36,8 +36,10 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument('--dim', type=int)
 parser.add_argument('--model_name', type=str)
+parser.add_argument('--dataset', type=str)
 parser.add_argument('--batch_size', type=int, default=4096)
 parser.add_argument('--minimum_degree_onehot', type=int, default=100)
+parser.add_argument('--csv', type=str)
 
 args = parser.parse_args()
 
@@ -57,7 +59,7 @@ def timeit(func):
 # In[3]:
 
 
-dataset = "ogbl-collab"
+dataset = args.dataset
 # batch_size = 512
 # batch_size = 1024
 batch_size = args.batch_size
@@ -280,6 +282,8 @@ if args.model_name =="DotHash":
     result11["model"] = "DotHash"
     result11["dim"] = args.dim
     result11["time"] = running_time
+    result11["minimum_degree_onehot"] = -1
+    result11["dataset"] = dataset
     result.append(result11)
 elif args.model_name == "MPLP":
     dothash_est,running_time = run_dothash(args.dim,data,edges,minimum_degree_onehot=minimum_degree_onehot)
@@ -287,6 +291,8 @@ elif args.model_name == "MPLP":
     result11["model"] = "MPLP"
     result11["dim"] = args.dim
     result11["time"] = running_time
+    result11["minimum_degree_onehot"] = minimum_degree_onehot
+    result11["dataset"] = dataset
     result.append(result11)
 #     # dothash_est,running_time = run_dothash(dim1,data,edges,minimum_degree_onehot=-1,torchhd=False)
 #     # result11 = get_MSE(dothash_est, true_count)
@@ -308,12 +314,14 @@ elif args.model_name == "ELPH":
     result11["model"] = "ELPH"
     result11["dim"] = args.dim
     result11["time"] = running_time
+    result11["minimum_degree_onehot"] = -1
+    result11["dataset"] = dataset
     result.append(result11)
 
 
 # # In[19]:
 # check whether file exist
-filename = "hash_compare.csv"
+filename = args.csv
 from pathlib import Path
 my_file = Path(filename)
 if my_file.exists():
