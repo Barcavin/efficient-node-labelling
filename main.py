@@ -13,7 +13,7 @@ import torch_geometric.transforms as T
 from ogb.linkproppred import Evaluator, PygLinkPropPredDataset
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
-from torch_geometric.utils import (degree,
+from torch_geometric.utils import (degree, to_undirected,
                                    negative_sampling)
 from torch_sparse import SparseTensor
 from tqdm import tqdm
@@ -26,6 +26,10 @@ from node_label import spmdiff_
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
 
+
+from mask import MaskEdge
+
+mask = MaskEdge(0.7)
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
         mask_target, dataset_name):
@@ -42,18 +46,16 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
                              device=device)
     else:
         neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.full_adj_t.size(0))
+    if mask_target:
+        undirected_edges, masked_edges = mask(data.full_edge_index)
+        adj_t = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=data.full_adj_t.sizes())
+    else:
+        adj_t = data.full_adj_t
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
-    for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
+    for perm in DataLoader(range(masked_edges.size(1)), batch_size,
                            shuffle=True):
-        edge = pos_train_edge[perm].t()
-        if mask_target:
-            adj_t = data.full_adj_t
-            undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
-            target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
-            adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
-        else:
-            adj_t = data.full_adj_t
+        edge = masked_edges[:,perm]
 
 
         h = encoder(data.x, adj_t)
