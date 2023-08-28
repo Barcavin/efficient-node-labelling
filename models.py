@@ -178,11 +178,14 @@ class SAGE(torch.nn.Module):
                 self.xemb.append(nn.Linear(self.input_size, hidden_channels))
                 self.xemb.append(nn.Dropout(dropout, inplace=True) if dropout > 1e-6 else nn.Identity())
                 self.input_size = hidden_channels
-            self.convs.append(conv_func(self.input_size, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(
-                    conv_func(hidden_channels, hidden_channels))
-            self.convs.append(conv_func(hidden_channels, out_channels))
+            if num_layers == 1:
+                self.convs.append(conv_func(self.input_size, out_channels))
+            else:
+                self.convs.append(conv_func(self.input_size, hidden_channels))
+                for _ in range(num_layers - 2):
+                    self.convs.append(
+                        conv_func(hidden_channels, hidden_channels))
+                self.convs.append(conv_func(hidden_channels, out_channels))
 
         self.dropout = dropout
 

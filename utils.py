@@ -45,9 +45,13 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         if use_valedges_as_input:
             val_edge_index = split_edge['valid']['edge'].t()
             full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+            data.full_edge_index = to_undirected(full_edge_index)
+            data.edge_index = data.edge_index
             data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
                                                     sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
             data.full_adj_t = data.full_adj_t.to_symmetric()
+            data.adj_t = data.full_adj_t
+            split_edge["train"]['edge'] = torch.cat([split_edge["train"]['edge'], split_edge['valid']['edge']], dim=0)
         else:
             data.full_adj_t = data.adj_t
         # make node feature as float

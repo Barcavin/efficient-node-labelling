@@ -1,3 +1,7 @@
+# Following CMD can achieve the 65+ results, due to using validation edges during training to train
+# the node embedding
+# python main.py --dataset=ogbl-collab --encoder=sage --mask_target=True --predictor=inner --year=2010 --use_valedges_as_input=True --dataset_dir=../efficient-node-labelling/data --use_feature=False --use_embedding=True --batch_size=30000 --num_layer=1
+
 import argparse
 import os
 import sys
