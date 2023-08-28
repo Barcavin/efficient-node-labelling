@@ -33,15 +33,15 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
     predictor.train()
     device = data.full_adj_t.device()
     criterion = BCEWithLogitsLoss(reduction='mean')
-    pos_train_edge = split_edge['train']['edge'].to(device)
+    pos_train_edge = torch.concat([split_edge['train']['edge'], split_edge['valid']['edge']], dim=0).to(device)
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
     if dataset_name.startswith("ogbl"):
-        neg_edge_epoch = torch.randint(0, data.full_adj_t.size(0), data.edge_index.size(), dtype=torch.long,
+        neg_edge_epoch = torch.randint(0, data.full_adj_t.size(0), pos_train_edge.t().size(), dtype=torch.long,
                              device=device)
     else:
-        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.full_adj_t.size(0))
+        neg_edge_epoch = negative_sampling(data.full_edge_index, num_nodes=data.full_adj_t.size(0))
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
