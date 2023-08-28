@@ -153,38 +153,24 @@ class GCN(torch.nn.Module):
         return x
         
 class SAGE(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout, xdropout, use_feature=True, jk=False, embedding=None):
+    def __init__(self, *args, **kwargs):
         super(SAGE, self).__init__()
 
-        self.use_feature = use_feature
-        self.embedding = embedding
-        self.dropout = dropout
-        self.xdropout = xdropout
-        self.input_size = 0
-        self.jk = jk
-        if jk:
-            self.register_parameter("jkparams", nn.Parameter(torch.randn((num_layers,))))
-        if self.use_feature:
-            self.input_size += in_channels
-        if self.embedding is not None:
-            self.input_size += embedding.embedding_dim
-        self.convs = torch.nn.ModuleList()
-        
-        if self.input_size > 0:
-            conv_func = partial(SAGEConv, cached=False)
-            self.xemb = nn.Sequential(nn.Dropout(xdropout)) # nn.Identity()
-            if num_layers==0:
-                self.xemb.append(nn.Linear(self.input_size, hidden_channels))
-                self.xemb.append(nn.Dropout(dropout, inplace=True) if dropout > 1e-6 else nn.Identity())
-                self.input_size = hidden_channels
-            self.convs.append(conv_func(self.input_size, hidden_channels))
-            for _ in range(num_layers - 2):
-                self.convs.append(
-                    conv_func(hidden_channels, hidden_channels))
-            self.convs.append(conv_func(hidden_channels, out_channels))
+        num_layers = 1
+        in_channels = 256
+        hidden_channels = 256
+        out_channels = 256
+        dropout = 0.3
+        self.emb = args[-1]
+        self.convs = nn.ModuleList()
+        for i in range(num_layers):
+            first_channels = in_channels if i == 0 else hidden_channels
+            second_channels = out_channels if i == num_layers - 1 else hidden_channels
 
-        self.dropout = dropout
+            self.convs.append(SAGEConv(first_channels, second_channels))
+
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.ELU()
 
     def reset_parameters(self):
         for m in self.modules():
@@ -192,24 +178,14 @@ class SAGE(torch.nn.Module):
                 m.reset_parameters()
 
     def forward(self, x, adj_t):
-        if self.input_size > 0:
-            xs = []
-            if self.use_feature:
-                xs.append(x)
-            if self.embedding is not None:
-                xs.append(self.embedding.weight)
-            x = torch.cat(xs, dim=1)
-            x = self.xemb(x)
-            jkx = []
-            for conv in self.convs:
-                x = conv(x, adj_t)
-                # x = F.relu(x) # FIXME: not using nonlinearity in Sketching
-                if self.jk:
-                    jkx.append(x)
-            if self.jk: # JumpingKnowledge Connection
-                jkx = torch.stack(jkx, dim=0)
-                sftmax = self.jkparams.reshape(-1, 1, 1)
-                x = torch.sum(jkx*sftmax, dim=0)
+        x = self.emb.weight
+        for i, conv in enumerate(self.convs[:-1]):
+            x = self.dropout(x)
+            x = conv(x, adj_t)
+            x = self.activation(x)
+        x = self.dropout(x)
+        x = self.convs[-1](x, adj_t)
+        x = self.activation(x)
         return x
 
 class APPNP_model(torch.nn.Module):

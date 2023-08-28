@@ -45,6 +45,8 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         if use_valedges_as_input:
             val_edge_index = split_edge['valid']['edge'].t()
             full_edge_index = torch.cat([data.edge_index, val_edge_index], dim=-1)
+            full_edge_index = to_undirected(full_edge_index)
+            data.full_edge_index = full_edge_index
             data.full_adj_t = SparseTensor.from_edge_index(full_edge_index, 
                                                     sparse_sizes=(data.num_nodes, data.num_nodes)).coalesce()
             data.full_adj_t = data.full_adj_t.to_symmetric()
@@ -212,8 +214,9 @@ def initialize(data, method):
     return data, input_size
 
 def initial_embedding(data, hidden_channels, device):
+    hidden_channels = 256
     embedding= torch.nn.Embedding(data.num_nodes, hidden_channels).to(device)
-    torch.nn.init.xavier_uniform_(embedding.weight)
+    # torch.nn.init.xavier_uniform_(embedding.weight)
     return embedding
 
 

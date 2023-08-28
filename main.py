@@ -31,29 +31,29 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
         mask_target, dataset_name):
     encoder.train()
     predictor.train()
-    device = data.adj_t.device()
+    device = data.full_adj_t.device()
     criterion = BCEWithLogitsLoss(reduction='mean')
     pos_train_edge = split_edge['train']['edge'].to(device)
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
     if dataset_name.startswith("ogbl"):
-        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), data.edge_index.size(), dtype=torch.long,
+        neg_edge_epoch = torch.randint(0, data.full_adj_t.size(0), data.edge_index.size(), dtype=torch.long,
                              device=device)
     else:
-        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
+        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.full_adj_t.size(0))
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
                            shuffle=True):
         edge = pos_train_edge[perm].t()
         if mask_target:
-            adj_t = data.adj_t
+            adj_t = data.full_adj_t
             undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
             target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
             adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
         else:
-            adj_t = data.adj_t
+            adj_t = data.full_adj_t
 
 
         h = encoder(data.x, adj_t)
@@ -90,8 +90,8 @@ def test(encoder, predictor, data, split_edge, evaluator,
          batch_size, use_valedges_as_input, fast_inference):
     encoder.eval()
     predictor.eval()
-    device = data.adj_t.device()
-    adj_t = data.adj_t
+    device = data.full_adj_t.device()
+    adj_t = data.full_adj_t
     h = encoder(data.x, adj_t)
 
     # pos_train_edge = split_edge['train']['edge'].to(device)
