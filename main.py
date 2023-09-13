@@ -18,8 +18,6 @@ from torch_geometric.utils import (degree,
 from torch_sparse import SparseTensor
 from tqdm import tqdm
 
-import torchhd
-
 from logger import Logger
 from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling, DotProductLabelling
 from node_label import spmdiff_
@@ -180,7 +178,6 @@ def main():
     # model setting
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
-    parser.add_argument('--feature_channels', type=int, default=256)
     parser.add_argument('--xdp', type=float, default=0.2)
     parser.add_argument('--feat_dropout', type=float, default=0.5)
     parser.add_argument('--label_dropout', type=float, default=0.5)
@@ -277,8 +274,6 @@ def main():
             nodes_to_one_hot = d_v >= args.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             print(f"number of nodes to onehot: {int(one_hot_dim)}")
-        # randomize the input features
-        data.x = torchhd.random(data.num_nodes, args.feature_channels)
         data = data.to(device)
         if args.use_embedding:
             emb = initial_embedding(data, args.hidden_channels, device)
