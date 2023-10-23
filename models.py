@@ -10,8 +10,7 @@ from torch_sparse.matmul import spmm_max, spmm_mean, spmm_add
 
 from functools import partial
 
-from Conv import Sage_conv
-from node_label import de_plus_finder, DotHash
+from node_label import de_plus_finder, NodeLabel
 from typing import Iterable, Final
 
 
@@ -212,79 +211,6 @@ class SAGE(torch.nn.Module):
                 x = torch.sum(jkx*sftmax, dim=0)
         return x
 
-class APPNP_model(torch.nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers,
-                 dropout, norm_type="none", alpha=0.1, k=10):
-        super(APPNP_model, self).__init__()
-
-        self.num_layers = num_layers
-        self.norm_type = norm_type
-        self.dropout = nn.Dropout(dropout)
-        self.layers = nn.ModuleList()
-        self.norms = nn.ModuleList()
-
-        if num_layers == 1:
-            self.layers.append(nn.Linear(input_dim, output_dim))
-        else:
-            self.layers.append(nn.Linear(input_dim, hidden_dim))
-            if self.norm_type == "batch":
-                self.norms.append(nn.BatchNorm1d(hidden_dim))
-            elif self.norm_type == "layer":
-                self.norms.append(nn.LayerNorm(hidden_dim))
-
-            for i in range(num_layers - 2):
-                self.layers.append(nn.Linear(hidden_dim, hidden_dim))
-                if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_dim))
-                elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_dim))
-
-            self.layers.append(nn.Linear(hidden_dim, output_dim))
-
-        self.propagate = APPNP(k, alpha, 0.)
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        for layer in self.layers:
-            layer.reset_parameters()
-
-    def forward(self, x, adj_t):
-        h = x
-        for l, layer in enumerate(self.layers):
-            h = layer(h)
-
-            if l != self.num_layers - 1:
-                if self.norm_type != "none":
-                    h = self.norms[l](h)
-                h = F.relu(h)
-                h = self.dropout(h)
-
-        h = self.propagate(h, adj_t)
-        return h
-
-class GAT(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels, heads, dropout, norm_type="none"):
-        super().__init__()
-        self.convs = torch.nn.ModuleList()
-        self.dropout = dropout
-        self.convs.append(GATConv(in_channels, hidden_channels, heads, dropout=self.dropout))
-        # On the Pubmed dataset, use `heads` output heads in `conv2`.
-        self.convs.append(GATConv(hidden_channels * heads, out_channels, heads=1,
-                             concat=False, dropout=self.dropout))
-        self.dropout = dropout
-
-    def reset_parameters(self):
-        for conv in self.convs:
-            conv.reset_parameters()
-
-    def forward(self, x, adj_t):
-        for l, conv in enumerate(self.convs[:-1]):
-            x = conv(x, adj_t)
-            x = F.relu(x)
-            x = F.dropout(x, p=self.dropout, training=self.training)
-        x = self.convs[-1](x, adj_t)
-        return x
-
 
 class LinkPredictor(torch.nn.Module):
     def __init__(self, predictor, in_channels, hidden_channels, out_channels, num_layers,
@@ -320,43 +246,126 @@ class LinkPredictor(torch.nn.Module):
             out = torch.sum(x, dim=-1)
         return out
 
-class Teacher_LinkPredictor(torch.nn.Module):
-    def __init__(self, predictor, in_channels, hidden_channels, out_channels, num_layers,
-                 dropout):
-        super(Teacher_LinkPredictor, self).__init__()
 
-        self.predictor = predictor
-        self.lins = torch.nn.ModuleList()
-        self.lins.append(torch.nn.Linear(in_channels, hidden_channels))
-        for _ in range(num_layers - 2):
-            self.lins.append(torch.nn.Linear(hidden_channels, hidden_channels))
-        self.lins.append(torch.nn.Linear(hidden_channels, out_channels))
+class MPLP(torch.nn.Module):
+    def __init__(self, in_channels, hidden_channels, num_layers,
+                 feat_dropout, label_dropout, num_hops=2, prop_type='combine', torchhd_style=True, use_degree='none',
+                 signature_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
+                 feature_combine="hadamard"):
+        super(MPLP, self).__init__()
 
-        self.dropout = dropout
+        self.in_channels = in_channels
+        self.feat_dropout = feat_dropout
+        self.label_dropout = label_dropout
+        self.num_hops = num_hops
+        self.prop_type = prop_type # "MPLP+exactly","MPLP+prop_only","MPLP+combine"
+        self.torchhd_style=torchhd_style
+        self.use_degree = use_degree
+        self.feature_combine = feature_combine
+        if self.use_degree == 'mlp':
+            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
+        if self.prop_type == 'prop_only':
+            struct_dim = 4
+        elif self.prop_type == 'exact':
+            struct_dim = 5
+        elif self.prop_type == 'combine':
+            struct_dim = 8
+        self.nodelabel = NodeLabel(signature_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+                               minimum_degree_onehot= minimum_degree_onehot)
+        self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
+
+        dense_dim = struct_dim + in_channels
+        if in_channels > 0:
+            if feature_combine == "hadamard":
+                feat_encode_input_dim = in_channels
+            elif feature_combine == "plus_minus":
+                feat_encode_input_dim = in_channels * 2
+            self.feat_encode = MLP(2, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
+        self.classifier = nn.Linear(dense_dim, 1)
+
 
     def reset_parameters(self):
-        for lin in self.lins:
-            lin.reset_parameters()
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
+                m.reset_parameters()
+    
+    def forward(self, x, adj, edges, cache_mode=None):
+        """
+        Args:
+            x: [N, in_channels] node embedding after GNN
+            adj: [N, N] adjacency matrix
+            edges: [2, E] target edges
+            fast_inference: bool. If True, only caching the message-passing without calculating the structural features
+        """
+        if cache_mode in ["use","delete"]:
+            # no need to compute node_weight
+            node_weight = None
+        elif self.use_degree == 'none':
+            node_weight = None
+        elif self.use_degree == 'mlp': # 'mlp' for now
+            xs = []
+            if self.in_channels > 0:
+                xs.append(x)
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
+            xs.append(degree)
+            node_weight_feat = torch.cat(xs, dim=1)
+            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1) + 1 # like residual, can be learned as 0 if needed
+        else:
+            # AA or RA
+            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1) + 1 # degree at least 1. then log(degree) > 0.
+            if self.use_degree == 'AA':
+                node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
+            elif self.use_degree == 'RA':
+                node_weight = torch.sqrt(torch.reciprocal(degree))
+            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def forward(self, x_i, x_j):
-        x = x_i * x_j
-        if self.predictor == 'mlp':
-            for lin in self.lins[:-1]:
-                x = lin(x)
-                x = F.relu(x)
-                x = F.dropout(x, p=self.dropout, training=self.training)
-            x = self.lins[-1](x)
-        elif self.predictor == 'inner':
-            x = torch.sum(x, dim=-1)
-        return torch.sigmoid(x)
+        if cache_mode in ["build","delete"]:
+            propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
+            return
+        else:
+            propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
+        propped_stack = torch.stack([*propped], dim=1)
+        out = self.struct_encode(propped_stack)
+
+        if self.in_channels > 0:
+            x_i = x[edges[0]]
+            x_j = x[edges[1]]
+            if self.feature_combine == "hadamard":
+                x_ij = x_i * x_j
+            elif self.feature_combine == "plus_minus":
+                x_ij = torch.cat([x_i+x_j, torch.abs(x_i-x_j)], dim=1)
+            x_ij = self.feat_encode(x_ij)
+            x = torch.cat([x_ij, out], dim=1)
+        else:
+            x = out
+        logit = self.classifier(x)
+        return logit
 
 
 
 
-class EfficientNodeLabelling(torch.nn.Module):
+
+
+def get_node_ids(l:SparseTensor):
+    row, col, _ = l.coo()
+    return torch.stack([row, col], dim=0)
+
+def get_count(l:SparseTensor, dim_size:int, weight=None):
+    row,col = get_node_ids(l)
+    if weight is None:
+        weight = torch.ones_like(row)
+    else:
+        weight = weight[row]
+    count = scatter_add(weight, row, dim_size=dim_size)
+    return count
+
+
+
+### Misc ###
+class NaiveNodeLabelling(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  dropout, num_hops=2, dgcnn=False, use_degree='none'):
-        super(EfficientNodeLabelling, self).__init__()
+        super(NaiveNodeLabelling, self).__init__()
 
         self.dropout = dropout
         self.num_hops = num_hops
@@ -394,7 +403,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         self.struct_encode = MLP(1, self.struct_dim, self.struct_dim, self.struct_dim, self.dropout, "batch", tailnormactdrop=True)
         self.cached_adj2_return = None
         self.cached_adj2 = None
-        # self.dothash = DotHash(torchhd_style=True, prop_type="exact")
+        # self.nodelabel = NodeLabel(torchhd_style=True, prop_type="exact")
 
 
     def reset_parameters(self):
@@ -469,7 +478,7 @@ class EfficientNodeLabelling(torch.nn.Module):
         c_2_2 = get_count(l_2_2, dim_size, node_weight)
         c_2_inf = get_count(l_2_inf, dim_size, node_weight) + get_count(l_inf_2, dim_size, node_weight)
 
-        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = self.dothash(edges, adj, node_weight=node_weight)
+        # count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf = self.nodelabel(edges, adj, node_weight=node_weight)
 
         out = torch.stack([c_1_1, c_1_2, c_1_inf, c_2_2, c_2_inf], dim=1).float()
         out = self.struct_encode(out)
@@ -494,116 +503,3 @@ class EfficientNodeLabelling(torch.nn.Module):
         x = F.relu(self.conv2(x))
         x = x.view(x.size(0), -1)  # [num_graphs, dense_dim]
         return x
-
-
-class DotProductLabelling(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, num_layers,
-                 feat_dropout, label_dropout, num_hops=2, prop_type='exact', torchhd_style=True, use_degree='none',
-                 dothash_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
-                 feature_combine="hadamard"):
-        super(DotProductLabelling, self).__init__()
-
-        self.in_channels = in_channels
-        self.feat_dropout = feat_dropout
-        self.label_dropout = label_dropout
-        self.num_hops = num_hops
-        self.prop_type = prop_type # "DP+exactly","DP+prop_only","DP+combine"
-        self.torchhd_style=torchhd_style
-        self.use_degree = use_degree
-        self.feature_combine = feature_combine
-        if self.use_degree == 'mlp':
-            self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
-        if self.prop_type == 'prop_only':
-            struct_dim = 4
-        elif self.prop_type == 'exact':
-            struct_dim = 5
-        elif self.prop_type == 'combine':
-            struct_dim = 8
-        self.dothash = DotHash(dothash_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
-                               minimum_degree_onehot= minimum_degree_onehot)
-        self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
-
-        dense_dim = struct_dim + in_channels
-        if in_channels > 0:
-            if feature_combine == "hadamard":
-                feat_encode_input_dim = in_channels
-            elif feature_combine == "plus_minus":
-                feat_encode_input_dim = in_channels * 2
-            self.feat_encode = MLP(2, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
-        self.classifier = nn.Linear(dense_dim, 1)
-
-
-    def reset_parameters(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
-                m.reset_parameters()
-    
-    def forward(self, x, adj, edges, cache_mode=None):
-        """
-        Args:
-            x: [N, in_channels] node embedding after GNN
-            adj: [N, N] adjacency matrix
-            edges: [2, E] target edges
-            fast_inference: bool. If True, only caching the message-passing without calculating the structural features
-        """
-        if cache_mode in ["use","delete"]:
-            # no need to compute node_weight
-            node_weight = None
-        elif self.use_degree == 'none':
-            node_weight = None
-        elif self.use_degree == 'mlp': # 'mlp' for now
-            xs = []
-            if self.in_channels > 0:
-                xs.append(x)
-            degree = adj.sum(dim=1).view(-1,1).to(adj.device())
-            xs.append(degree)
-            node_weight_feat = torch.cat(xs, dim=1)
-            node_weight = self.node_weight_encode(node_weight_feat).squeeze(-1) + 1 # like residual, can be learned as 0 if needed
-        else:
-            # AA or RA
-            degree = adj.sum(dim=1).view(-1,1).to(adj.device()).squeeze(-1) + 1 # degree at least 1. then log(degree) > 0.
-            if self.use_degree == 'AA':
-                node_weight = torch.sqrt(torch.reciprocal(torch.log(degree)))
-            elif self.use_degree == 'RA':
-                node_weight = torch.sqrt(torch.reciprocal(degree))
-            node_weight = torch.nan_to_num(node_weight, nan=0.0, posinf=0.0, neginf=0.0)
-
-        if cache_mode in ["build","delete"]:
-            propped = self.dothash(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
-            return
-        else:
-            propped = self.dothash(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
-        propped_stack = torch.stack([*propped], dim=1)
-        out = self.struct_encode(propped_stack)
-
-        if self.in_channels > 0:
-            x_i = x[edges[0]]
-            x_j = x[edges[1]]
-            if self.feature_combine == "hadamard":
-                x_ij = x_i * x_j
-            elif self.feature_combine == "plus_minus":
-                x_ij = torch.cat([x_i+x_j, torch.abs(x_i-x_j)], dim=1)
-            x_ij = self.feat_encode(x_ij)
-            x = torch.cat([x_ij, out], dim=1)
-        else:
-            x = out
-        logit = self.classifier(x)
-        return logit
-
-
-
-
-
-
-def get_node_ids(l:SparseTensor):
-    row, col, _ = l.coo()
-    return torch.stack([row, col], dim=0)
-
-def get_count(l:SparseTensor, dim_size:int, weight=None):
-    row,col = get_node_ids(l)
-    if weight is None:
-        weight = torch.ones_like(row)
-    else:
-        weight = weight[row]
-    count = scatter_add(weight, row, dim_size=dim_size)
-    return count

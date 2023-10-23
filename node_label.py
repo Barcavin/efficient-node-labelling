@@ -17,9 +17,9 @@ from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_
 
 import torchhd
 
-MINIMUM_DOTHASH_DIM=64
+MINIMUM_SIGNATURE_DIM=64
 
-class DotHash(torch.nn.Module):
+class NodeLabel(torch.nn.Module):
     def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
@@ -64,7 +64,7 @@ class DotHash(torch.nn.Module):
             nodes_to_one_hot = degree >= self.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             # warnings.warn(f"number of nodes to one-hot: {one_hot_dim}", UserWarning)
-            if one_hot_dim + MINIMUM_DOTHASH_DIM > self.dim:
+            if one_hot_dim + MINIMUM_SIGNATURE_DIM > self.dim:
                 raise ValueError(f"There are {int(one_hot_dim)} nodes with degree higher than {self.minimum_degree_onehot}, select a higher threshold to choose fewer nodes as hub")
             embedding = torch.zeros(num_nodes, self.dim, device=device)
             if one_hot_dim>0:

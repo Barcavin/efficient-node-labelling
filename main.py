@@ -19,7 +19,7 @@ from torch_sparse import SparseTensor
 from tqdm import tqdm
 
 from logger import Logger
-from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, EfficientNodeLabelling, DotProductLabelling
+from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, NaiveNodeLabelling, MPLP
 from node_label import spmdiff_
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
@@ -56,13 +56,6 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
         h = encoder(data.x, adj_t)
 
-
-        # if dataset != "collab" and dataset != "ppa":
-        # neg_edge = negative_sampling(data.edge_index, num_nodes=create_input(data).size(0),
-        #                         num_neg_samples=perm.size(0), method='sparse')
-        # elif dataset == "collab" or dataset == "ppa":
-        #     neg_edge = torch.randint(0, create_input(data).size()[0], edge.size(), dtype=torch.long,
-        #                      device=device)
         neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
@@ -175,6 +168,12 @@ def main():
     parser.add_argument('--use_valedges_as_input', type=str2bool, default='False', help='whether to use val edges as input')
     parser.add_argument('--year', type=int, default=-1)
 
+    # MPLP settings
+    parser.add_argument('--signature_dim', type=int, default=1024, help="the node signature dimension `F` in MPLP")
+    parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='the minimum degree of hubs with onehot encoding to reduce variance')
+    parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges to remove the shortcut')
+    parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="rescale vector norm to facilitate weighted count")
+    
     # model setting
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
@@ -183,18 +182,14 @@ def main():
     parser.add_argument('--label_dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--dothash_dim', type=int, default=1024)
-    parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='minimum degree for onehot encoding during dothash to reduce variance')
-    parser.add_argument('--predictor', type=str, default='mlp', choices=["inner","mlp","ENL","DP+exact","DP+prop_only","DP+combine"])  ##inner/mlp
+    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL","MPLP+exact","MPLP+prop_only","MPLP+combine"])
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--feature_combine', type=str, default='hadamard', choices=['hadamard','plus_minus'], help='how to represent a link with two nodes features')
     parser.add_argument('--jk', type=str2bool, default='True', help='whether to use Jumping Knowledge')
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
     parser.add_argument('--use_embedding', type=str2bool, default='False', help='whether to train node embedding')
-    parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges when computing node labelling')
-    parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
+    # parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
     parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
-    parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="the way to encode node weights")
     parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
 
     # training setting
@@ -287,16 +282,8 @@ def main():
             encoder = SAGE(data.num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.feat_dropout, args.xdp, args.use_feature, args.jk, emb).to(device)
-        elif args.encoder == 'appnp':
-            encoder = APPNP_model(input_size, args.hidden_channels,
-                        args.hidden_channels, args.num_layers,
-                        args.dropout).to(device)
-        elif args.encoder == 'gat':
-            encoder = GAT(input_size, args.hidden_channels,
-                        args.hidden_channels, 1,
-                        args.dropout).to(device)
         elif args.encoder == 'mlp':
-            encoder = MLP(args.num_layers, input_size, 
+            encoder = MLP(args.num_layers, data.num_features, 
                           args.hidden_channels, args.hidden_channels, args.dropout).to(device)
 
         predictor_in_dim = args.hidden_channels * int(args.use_feature or args.use_embedding)
@@ -304,16 +291,16 @@ def main():
         if args.predictor in ['inner','mlp']:
             predictor = LinkPredictor(args.predictor, predictor_in_dim, args.hidden_channels, 1,
                                     args.num_layers, args.feat_dropout).to(device)
-        elif args.predictor == 'ENL':
-            predictor = EfficientNodeLabelling(predictor_in_dim, args.hidden_channels,
-                                    args.num_layers, args.feat_dropout, args.num_hops, 
-                                    dgcnn=args.dgcnn, use_degree=args.use_degree).to(device)
-        elif 'DP' in args.predictor:
+        # elif args.predictor == 'ENL':
+        #     predictor = NaiveNodeLabelling(predictor_in_dim, args.hidden_channels,
+        #                             args.num_layers, args.feat_dropout, args.num_hops, 
+        #                             dgcnn=args.dgcnn, use_degree=args.use_degree).to(device)
+        elif 'MPLP' in args.predictor:
             prop_type = args.predictor.split("+")[1]
-            predictor = DotProductLabelling(predictor_in_dim, args.hidden_channels,
+            predictor = MPLP(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
-                                    use_degree=args.use_degree, dothash_dim=args.dothash_dim,
+                                    use_degree=args.use_degree, signature_dim=args.signature_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
                                     feature_combine=args.feature_combine).to(device)
 
