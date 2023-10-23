@@ -5,7 +5,7 @@ from torch_geometric.nn import (APPNP, GATConv, GCNConv, SAGEConv,
                                 global_add_pool, global_max_pool,
                                 global_mean_pool, global_sort_pool)
 from torch_sparse import SparseTensor
-from torch_scatter import scatter_add
+# from torch_scatter import scatter_add
 from torch_sparse.matmul import spmm_max, spmm_mean, spmm_add
 
 from functools import partial

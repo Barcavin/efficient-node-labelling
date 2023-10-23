@@ -16,10 +16,10 @@ from torch.utils.data import DataLoader
 from torch_geometric.utils import (degree,
                                    negative_sampling)
 from torch_sparse import SparseTensor
-from tqdm import tqdm
+# from tqdm import tqdm
 
 from logger import Logger
-from models import GAT, GCN, MLP, SAGE, APPNP_model, LinkPredictor, NaiveNodeLabelling, MPLP
+from models import GCN, MLP, SAGE, LinkPredictor, MPLP
 from node_label import spmdiff_
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
