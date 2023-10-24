@@ -6,8 +6,7 @@ Authors: Kaiwen Dong, Zhichun Guo, Nitesh V. Chawla
 ![Framework of MPLP](misc/diagram-framework.png)
 
 ## Introduction
-
-
+This repository contains the code for the paper [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976). MPLP is a simple yet effective message passing framework for link prediction. It is based on the observation that the common neighbor count can be estimated by performing message passing on the random vectors. MPLP is able to achieve state-of-the-art performance on a wide range of datasets on various domains, including social networks, biological networks, and citation networks.
 
 
 ## Environment Setting
@@ -32,10 +31,10 @@ In MPLP, there are couple of hyperparameters that can be tuned, including:
 
 - `--dataset`: the name of the dataset to be used.
 - `--batch_size`: the batch size.
+- `--signature_dim`: the node signature dimension `F` in MPLP
+- `--mask_target`: whether to mask the target node in the training set to remove the shortcut.
 - `--use_degree`: the methods to rescale the norm of random vectors.
 - `--minimum_degree_onehot`: the minimum degree of hubs with onehot encoding to reduce variance.
-- `--mask_target`: whether to mask the target node in the training set to remove the shortcut.
-- `--signature_dim`: the node signature dimension `F` in MPLP
 
 
 ## Experiment Reproduction
