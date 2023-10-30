@@ -226,7 +226,7 @@ def main():
     else:
         print(args)
     final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
-    final_log_path.mkdir(parents=True, exist_ok=True)
+    final_log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(final_log_path, 'w') as f:
         print(args, file=f)
     
