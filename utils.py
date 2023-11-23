@@ -70,6 +70,17 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name in pyg_dataset_dict:
         dataset_class, name = pyg_dataset_dict[name]
         data = dataset_class(root, name=name, transform=ToUndirected())[0]
+    elif name.startswith('Fake'):
+        # Fake-60
+        avg_degree = int(name.split('-')[1])
+        # dataset = datasets.FakeDataset(avg_num_nodes=100000, avg_num_edges=avg_degree)
+        nodes_per_block = 1000
+        num_blocks = 2
+        edge_probs = torch.ones(num_blocks, num_blocks) * 0.001
+        edge_probs += torch.eye(num_blocks)*(avg_degree/100)
+        dataset = datasets.StochasticBlockModelDataset(root, block_sizes=[nodes_per_block]*num_blocks, 
+                                                       edge_probs=edge_probs)
+        data = dataset[0]
     else:
         data = load_unsplitted_data(root, name)
     return data, None
