@@ -182,7 +182,8 @@ def main():
     parser.add_argument('--label_dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL","MPLP+exact","MPLP+prop_only","MPLP+combine"])
+    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL",
+    "MPLP+exact","MPLP+prop_only","MPLP+combine","MPLP+cross_product"])
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--feature_combine', type=str, default='hadamard', choices=['hadamard','plus_minus'], help='how to represent a link with two nodes features')
     parser.add_argument('--jk', type=str2bool, default='True', help='whether to use Jumping Knowledge')

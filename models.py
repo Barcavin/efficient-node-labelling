@@ -270,7 +270,9 @@ class MPLP(torch.nn.Module):
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 8
-        self.nodelabel = NodeLabel(signature_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+        elif self.prop_type == 'cross_product':
+            struct_dim = self.num_hops**2 # TODO
+        self.nodelabel = NodeLabel(signature_dim, num_hops, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 

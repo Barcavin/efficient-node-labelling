@@ -20,10 +20,11 @@ import torchhd
 MINIMUM_SIGNATURE_DIM=64
 
 class NodeLabel(torch.nn.Module):
-    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
+    def __init__(self, dim: int=1024, num_hops: int=2, torchhd_style=True, prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
         self.dim = dim
+        self.num_hops = num_hops
         self.torchhd_style = torchhd_style
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
@@ -42,6 +43,8 @@ class NodeLabel(torch.nn.Module):
                 return self.propagation(edges, adj_t, node_weight)
             elif self.prop_type == "combine":
                 return self.propagation_combine(edges, adj_t, node_weight)
+            elif self.prop_type == "cross_product":
+                return self.propagation_cross_product(edges, adj_t, node_weight)
 
     def subgraph(self, edges: Tensor, adj_t: SparseTensor):
         row,col = edges
@@ -268,6 +271,46 @@ class NodeLabel(torch.nn.Module):
         count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
         return count_1_1, count_1_2, count_2_2, count_self_1_2
 
+    def propagation_cross_product(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
+
+        xs_edges = []
+        for i in range(self.num_hops):
+            x = matmul(adj_t, x)
+            xs_edges.append(x[edges])
+        xs_edges = torch.stack(xs_edges, dim=0) # xs_edges : [num_hops, 2, num_edges, F]
+
+        xs_edges = xs_edges.permute(1,2,0,3) # xs_edges : [2, num_edges, num_hops, F]
+
+        x_i = xs_edges[0] # x_i : [num_edges, num_hops, F]
+        x_j = xs_edges[1] # x_j : [num_edges, num_hops, F]
+
+        x_j_tranpose = x_j.transpose(1,2) # x_j_tranpose : [num_edges, F, num_hops]
+
+        x_mat = torch.bmm(x_i, x_j_tranpose).contiguous() # x_ij : [num_edges, num_hops, num_hops]
+
+        triu_indices = torch.triu_indices(self.num_hops, self.num_hops, offset=1)
+        triu_indices_1d = select_tensor_by_index(self.num_hops, triu_indices)
+
+        # read the upper triangle in a flatten way
+        x_ij = x_mat.view(-1, self.num_hops*self.num_hops)[:,triu_indices_1d] # x_ij : [num_edges, num_hops*(num_hops-1)/2]
+
+        x_ji = x_mat.transpose(1,2).contiguous().view(-1, self.num_hops*self.num_hops)[:,triu_indices_1d] # x_ji : [num_edges, num_hops*(num_hops-1)/2]
+        
+        x_ii = torch.diagonal(x_mat, dim1=1, dim2=2) # x_ii : [num_edges, num_hops]
+
+        x_ij_plus = x_ij + x_ji # x_ij_plus : [num_edges, num_hops*(num_hops-1)/2]
+        x_ij_minus = torch.abs(x_ij - x_ji) # x_ij_minus : [num_edges, num_hops*(num_hops-1)/2]
+
+        out = torch.cat((x_ii, x_ij_plus, x_ij_minus), dim=-1) # out : [num_edges, num_hops**2]
+        out = out.transpose(0,1) # out : [num_hops**2, num_edges]
+        return out
+
+def select_tensor_by_index(n_cols, index: List[Tensor]):
+    i = index[0]
+    j = index[1]
+    index = i * n_cols + j
+    return index
 
 def dotproduct_naive(tensor1, tensor2):
     return (tensor1 * tensor2).sum(dim=-1)
