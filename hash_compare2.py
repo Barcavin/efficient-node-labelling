@@ -330,6 +330,6 @@ if my_file.exists():
 else:
     mode='w'
     header=True
-df = pd.DataFrame(result)
 result[0]["avg_degree"] = data.edge_index.shape[1]/data.num_nodes
+df = pd.DataFrame(result)
 df.to_csv(my_file,index=False,header=header,mode=mode)
