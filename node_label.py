@@ -261,12 +261,16 @@ class NodeLabel(torch.nn.Module):
         degree_one_hop = adj_t.sum(dim=1)
 
         count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]])
+        count_2_1 = dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
         count_2_2 = dot_product((two_hop_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]) , (two_hop_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
+        
 
-
-        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
-        return count_1_1, count_1_2, count_2_2, count_self_1_2
+        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[0]])
+        count_self_2_1 = dot_product(one_hop_x[edges[1]] , two_hop_x[edges[1]])
+        degree_u = degree_one_hop[edges[0]]
+        degree_v = degree_one_hop[edges[1]]
+        return count_1_1, count_1_2, count_2_1, count_2_2, count_self_1_2, count_self_2_1, degree_u, degree_v
 
 
 def dotproduct_naive(tensor1, tensor2):

@@ -265,7 +265,7 @@ class MPLP(torch.nn.Module):
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type == 'prop_only':
-            struct_dim = 4
+            struct_dim = 8
         elif self.prop_type == 'exact':
             struct_dim = 5
         elif self.prop_type == 'combine':
