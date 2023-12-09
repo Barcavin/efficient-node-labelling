@@ -20,13 +20,13 @@ from tqdm import tqdm
 
 from logger import Logger
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
-from node_label import spmdiff_
+from node_label import spmdiff_, get_two_hop_adj
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
 
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target, dataset_name):
+        mask_target, dataset_name, adj2):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
@@ -59,7 +59,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
         neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
-        out = predictor(h, adj_t, train_edges).squeeze()
+        out = predictor(h, adj_t, train_edges, adj2 = adj2).squeeze()
         loss = criterion(out, train_label)
 
         loss.backward()
@@ -78,7 +78,7 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 @torch.no_grad()
 def test(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input, fast_inference):
+         batch_size, use_valedges_as_input, fast_inference, adj2):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -94,14 +94,14 @@ def test(encoder, predictor, data, split_edge, evaluator,
     pos_valid_preds = []
     for perm in DataLoader(range(pos_valid_edge.size(0)), batch_size):
         edge = pos_valid_edge[perm].t()
-        out = predictor(h, adj_t, edge)
+        out = predictor(h, adj_t, edge, adj2 = adj2)
         pos_valid_preds += [out.squeeze().cpu()]
     pos_valid_pred = torch.cat(pos_valid_preds, dim=0)
 
     neg_valid_preds = []
     for perm in DataLoader(range(neg_valid_edge.size(0)), batch_size):
         edge = neg_valid_edge[perm].t()
-        neg_valid_preds += [predictor(h, adj_t, edge).squeeze().cpu()]
+        neg_valid_preds += [predictor(h, adj_t, edge, adj2 = adj2).squeeze().cpu()]
     neg_valid_pred = torch.cat(neg_valid_preds, dim=0)
 
     start_time = time.perf_counter()
@@ -117,14 +117,14 @@ def test(encoder, predictor, data, split_edge, evaluator,
     pos_test_preds = []
     for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
         edge = pos_test_edge[perm].t()
-        out = predictor(h, adj_t, edge, cache_mode=cache_mode)
+        out = predictor(h, adj_t, edge, cache_mode=cache_mode, adj2 = adj2)
         pos_test_preds += [out.squeeze().cpu()]
     pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
     neg_test_preds = []
     for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
         edge = neg_test_edge[perm].t()
-        neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode).squeeze().cpu()]
+        neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
     neg_test_pred = torch.cat(neg_test_preds, dim=0)
     end_time = time.perf_counter()
     total_time = end_time - start_time
@@ -173,8 +173,12 @@ def main():
     parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='the minimum degree of hubs with onehot encoding to reduce variance')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges to remove the shortcut')
     parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="rescale vector norm to facilitate weighted count")
+    parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
+    parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
+    parser.add_argument('--adj2', type=str2bool, default="False", help='Whether to use 2-hop adj for MPLP+prop_only.')
     
     # model setting
+    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL","MPLP+exact","MPLP+prop_only","MPLP+combine"])
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
     parser.add_argument('--xdp', type=float, default=0.2)
@@ -182,15 +186,12 @@ def main():
     parser.add_argument('--label_dropout', type=float, default=0.5)
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL","MPLP+exact","MPLP+prop_only","MPLP+combine"])
     parser.add_argument('--use_feature', type=str2bool, default='True', help='whether to use node features as input')
     parser.add_argument('--feature_combine', type=str, default='hadamard', choices=['hadamard','plus_minus'], help='how to represent a link with two nodes features')
     parser.add_argument('--jk', type=str2bool, default='True', help='whether to use Jumping Knowledge')
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
     parser.add_argument('--use_embedding', type=str2bool, default='False', help='whether to train node embedding')
     # parser.add_argument('--dgcnn', type=str2bool, default='False', help='whether to use DGCNN as the target edge pooling')
-    parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
-    parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
@@ -264,7 +265,15 @@ def main():
                     exit(0)
                 else:
                     continue
-        
+        if args.adj2:
+            print("Computing 2-hop adj. This may take a while.")
+            start_time = time.time()
+            adj_t_no_value = data.adj_t.clone().set_value_(None)
+            _, adj2 = get_two_hop_adj(adj_t_no_value)
+            end_time = time.time()
+            print(f"Computing 2-hop adj took {end_time - start_time:.4f}s")
+        else:
+            adj2 = None
         if args.minimum_degree_onehot > 0:
             d_v = degree(data.edge_index[0],data.num_nodes)
             nodes_to_one_hot = d_v >= args.minimum_degree_onehot
@@ -303,7 +312,7 @@ def main():
                                     prop_type=prop_type, torchhd_style=args.torchhd_style,
                                     use_degree=args.use_degree, signature_dim=args.signature_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
-                                    feature_combine=args.feature_combine).to(device)
+                                    feature_combine=args.feature_combine, adj2=args.adj2).to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()
@@ -317,10 +326,10 @@ def main():
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset)
+                         optimizer, args.batch_size, args.mask_target, args.dataset, adj2=adj2)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input, args.fast_inference)
+                            evaluator, args.batch_size, args.use_valedges_as_input, args.fast_inference, adj2=adj2)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]
@@ -348,6 +357,16 @@ def main():
 
             if cnt_wait >= args.patience:
                 break
+            with open("threshold.json") as f:
+                import json
+                threshold = json.load(f)[args.dataset] # threshold is a list [(epoch, performance)]
+            for t_epoch, t_value in threshold:
+                if epoch >= t_epoch and results[args.metric][1]*100 < t_value:
+                    print(f"Discard due to low test performance {results[args.metric][1]} < {t_value} after epoch {t_epoch}")
+                    break
+            else:
+                continue
+            break
 
         for key in loggers.keys():
             print(key)

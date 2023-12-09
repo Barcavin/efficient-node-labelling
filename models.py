@@ -251,7 +251,7 @@ class MPLP(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  feat_dropout, label_dropout, num_hops=2, prop_type='combine', torchhd_style=True, use_degree='none',
                  signature_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
-                 feature_combine="hadamard"):
+                 feature_combine="hadamard",adj2=False):
         super(MPLP, self).__init__()
 
         self.in_channels = in_channels
@@ -262,6 +262,7 @@ class MPLP(torch.nn.Module):
         self.torchhd_style=torchhd_style
         self.use_degree = use_degree
         self.feature_combine = feature_combine
+        self.adj2 = adj2
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type == 'prop_only':
@@ -289,7 +290,7 @@ class MPLP(torch.nn.Module):
             if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
                 m.reset_parameters()
     
-    def forward(self, x, adj, edges, cache_mode=None):
+    def forward(self, x, adj, edges, cache_mode=None, adj2=None):
         """
         Args:
             x: [N, in_channels] node embedding after GNN
@@ -323,7 +324,7 @@ class MPLP(torch.nn.Module):
             propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
             return
         else:
-            propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode)
+            propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode, adj2=adj2)
         propped_stack = torch.stack([*propped], dim=1)
         out = self.struct_encode(propped_stack)
 
