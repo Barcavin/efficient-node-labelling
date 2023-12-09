@@ -161,18 +161,22 @@ class NodeLabel(torch.nn.Module):
 
         # size: [(2 x num_target_edges(row,col)) , total_num_nodes_in_2_hop_subgraph ]
         # one_hop_adj = one_hop_adj[subset] # not subsetting adj because two-iter propagation needs all nodes embedding
-        two_hop_adj = two_hop_adj[subset]
+        # two_hop_adj = two_hop_adj[subset] # comment out since we want to subset two_hop_adj by subset_unique
 
         degree_one_hop_subgraph_nodes = one_hop_adj.sum(dim=1)
         degree_one_hop = degree_one_hop_subgraph_nodes[subset]
         degree_one_hop = degree_one_hop.view(2, edges.size(1))
-        degree_two_hop = two_hop_adj.sum(dim=1)
+        degree_two_hop = two_hop_adj[subset].sum(dim=1)
         degree_two_hop = degree_two_hop.view(2, edges.size(1))
 
+        subset_unique, inverse_indices = torch.unique(subset, return_inverse=True)
         one_hop_x_subgraph_nodes = matmul(one_hop_adj, x)
-        two_iter_x = matmul(one_hop_adj[subset], one_hop_x_subgraph_nodes)
+        two_iter_x = matmul(one_hop_adj[subset_unique], one_hop_x_subgraph_nodes)[inverse_indices]
+        ## TODO: verify if matmul(one_hop_adj[subset], one_hop_x_subgraph_nodes)
+        ##                 matmul(one_hop_adj, one_hop_x_subgraph_nodes) [subset] are the same
         one_hop_x = one_hop_x_subgraph_nodes[subset]
-        two_hop_x = matmul(two_hop_adj, x) # size: [(2 x num_target_edges(row,col)) , dim]
+        # two_hop_x = matmul(two_hop_adj_subset, x) # size: [(2 x num_target_edges(row,col)) , dim]
+        two_hop_x = matmul(two_hop_adj[subset_unique], x)[inverse_indices]
 
         one_hop_x = one_hop_x.view(2, edges.size(1), -1)
         two_hop_x = two_hop_x.view(2, edges.size(1), -1)

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch_geometric.utils import (degree,
                                    negative_sampling)
 from torch_sparse import SparseTensor
-# from tqdm import tqdm
+from tqdm import tqdm
 
 from logger import Logger
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
@@ -40,10 +40,8 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
                              device=device)
     else:
         neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
-    # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
-    #                        shuffle=True)) ):
-    for perm in DataLoader(range(pos_train_edge.size(0)), batch_size,
-                           shuffle=True):
+    for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
+                           shuffle=True), desc='Training')):
         edge = pos_train_edge[perm].t()
         if mask_target:
             adj_t = data.adj_t
