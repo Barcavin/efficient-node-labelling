@@ -195,7 +195,7 @@ def main():
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
-    parser.add_argument('--test_batch_size', type=int, default=1e5)
+    parser.add_argument('--test_batch_size', type=int, default=100000)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.005)
