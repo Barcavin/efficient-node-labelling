@@ -195,6 +195,7 @@ def main():
 
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
+    parser.add_argument('--test_batch_size', type=int, default=1e5)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.005)
@@ -329,7 +330,7 @@ def main():
                          optimizer, args.batch_size, args.mask_target, args.dataset, adj2=adj2)
 
             results = test(encoder, predictor, data, split_edge,
-                            evaluator, args.batch_size, args.use_valedges_as_input, args.fast_inference, adj2=adj2)
+                            evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, adj2=adj2)
 
             if results[args.metric][0] >= best_val:
                 best_val = results[args.metric][0]

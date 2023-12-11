@@ -149,6 +149,12 @@ class NodeLabel(torch.nn.Module):
         degree_two_hop = two_hop_adj[subset].sum(dim=1)
         degree_two_hop = degree_two_hop.view(2, edges.size(1))
 
+        degree_u = degree_one_hop[0,:]
+        degree_v = degree_one_hop[1,:]
+        degree_u_2 = degree_two_hop[0,:]
+        degree_v_2 = degree_two_hop[1,:]
+
+
         subset_unique, inverse_indices = torch.unique(subset, return_inverse=True)
         one_hop_x_subgraph_nodes = matmul(one_hop_adj, x)
         two_iter_x = matmul(one_hop_adj[subset_unique], one_hop_x_subgraph_nodes)[inverse_indices]
@@ -163,20 +169,26 @@ class NodeLabel(torch.nn.Module):
         two_iter_x = two_iter_x.view(2, edges.size(1), -1)
 
         count_1_1 = dot_product(one_hop_x[0,:,:], one_hop_x[1,:,:])
-        count_1_2 = dot_product(one_hop_x[0,:,:] , two_hop_x[1,:,:]) + dot_product(two_hop_x[0,:,:] , one_hop_x[1,:,:])
+        count_1_2 = dot_product(one_hop_x[0,:,:] , two_hop_x[1,:,:])
+        count_2_1 = dot_product(two_hop_x[0,:,:] , one_hop_x[1,:,:])
         count_2_2 = dot_product(two_hop_x[0,:,:] , two_hop_x[1,:,:])
 
-        count_1_inf = degree_one_hop[0,:] + degree_one_hop[1,:] - 2 * count_1_1 - count_1_2
-        count_2_inf = degree_two_hop[0,:] + degree_two_hop[1,:] - 2 * count_2_2 - count_1_2
+        count_1_inf = degree_u + degree_v - 2 * count_1_1 - count_1_2 - count_2_1
+        count_2_inf = degree_u_2 + degree_v_2 - 2 * count_2_2 - count_1_2 - count_2_1
 
         # combine part
-        comb_count_1_2 = dot_product(one_hop_x[0,:,:] , two_iter_x[1,:,:]) + dot_product(two_iter_x[0,:,:] , one_hop_x[1,:,:])
-        comb_count_2_2 = dot_product((two_iter_x[0,:,:] - degree_one_hop[0,:].view(-1,1)*x[edges[0]]), # two-iter contains self return nodes, thus exclude them
-                                     (two_iter_x[1,:,:] - degree_one_hop[1,:].view(-1,1)*x[edges[1]]))
+        comb_count_1_2 = dot_product(one_hop_x[0,:,:] , two_iter_x[1,:,:])
+        comb_count_2_1 = dot_product(two_iter_x[0,:,:] , one_hop_x[1,:,:])
+        comb_count_2_2 = dot_product((two_iter_x[0,:,:] - degree_u.view(-1,1)*x[edges[0]]), # two-iter contains self return nodes, thus exclude them
+                                     (two_iter_x[1,:,:] - degree_v.view(-1,1)*x[edges[1]]))
         # count those 1 step and 2 step away from the target nodes. thus they form triangles
-        comb_count_triangle = dot_product(one_hop_x[0,:,:] , two_iter_x[0,:,:]) + dot_product(one_hop_x[1,:,:] , two_iter_x[1,:,:])
+        comb_count_self_1_2 = dot_product(one_hop_x[0,:,:] , two_iter_x[0,:,:])
+        comb_count_self_2_1 = dot_product(one_hop_x[1,:,:] , two_iter_x[1,:,:])
 
-        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, comb_count_1_2, comb_count_2_2, comb_count_triangle
+        return count_1_1, count_1_2, count_2_1, count_2_2, count_1_inf, count_2_inf, \
+                comb_count_1_2, comb_count_2_1, comb_count_2_2, comb_count_self_1_2, comb_count_self_2_1,\
+                degree_u, degree_v, degree_u_2, degree_v_2
+                
 
     def propagation_combine_cache(self, edges: Tensor, adj_t: SparseTensor, node_weight=None, cache_mode=None):
         if cache_mode == 'build':
@@ -220,21 +232,31 @@ class NodeLabel(torch.nn.Module):
             two_iter_x = self.cached_two_iter_x
 
         count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
-        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]]) + dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
+        count_1_2 = dot_product(one_hop_x[edges[0]] , two_hop_x[edges[1]])
+        count_2_1 = dot_product(two_hop_x[edges[0]] , one_hop_x[edges[1]])
         count_2_2 = dot_product(two_hop_x[edges[0]] , two_hop_x[edges[1]])
 
-        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2
-        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2
+        count_1_inf = degree_one_hop[edges[0]] + degree_one_hop[edges[1]] - 2 * count_1_1 - count_1_2 - count_2_1
+        count_2_inf = degree_two_hop[edges[0]] + degree_two_hop[edges[1]] - 2 * count_2_2 - count_1_2 - count_2_1
 
 
-        count_1_2_only = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[1]]) + dot_product(two_iter_x[edges[0]] , one_hop_x[edges[1]])
-        count_2_2_only = dot_product((two_iter_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]),\
+        comb_count_1_2 = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[1]])
+        comb_count_2_1 = dot_product(two_iter_x[edges[0]] , one_hop_x[edges[1]])
+        comb_count_2_2 = dot_product((two_iter_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]),\
                                      (two_iter_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
 
 
-        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[0]]) + dot_product(one_hop_x[edges[1]] , two_iter_x[edges[1]])
+        comb_count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[0]])
+        comb_count_self_2_1 = dot_product(one_hop_x[edges[1]] , two_iter_x[edges[1]])
 
-        return count_1_1, count_1_2, count_2_2, count_1_inf, count_2_inf, count_1_2_only, count_2_2_only, count_self_1_2
+        degree_u = degree_one_hop[edges[0]]
+        degree_v = degree_one_hop[edges[1]]
+        degree_u_2 = degree_two_hop[edges[0]]
+        degree_v_2 = degree_two_hop[edges[1]]
+
+        return count_1_1, count_1_2, count_2_1, count_2_2, count_1_inf, count_2_inf, \
+                comb_count_1_2, comb_count_2_1, comb_count_2_2, comb_count_self_1_2, comb_count_self_2_1,\
+                degree_u, degree_v, degree_u_2, degree_v_2
 
     def propagation_only(self, edges: Tensor, adj_t: SparseTensor, node_weight=None, adj2: SparseTensor=None):
         adj_t, new_edges, subset_nodes = subgraph(edges, adj_t, 2)
