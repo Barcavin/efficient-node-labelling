@@ -249,7 +249,7 @@ class LinkPredictor(torch.nn.Module):
 
 class MPLP(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 feat_dropout, label_dropout, num_hops=2, prop_type='combine', torchhd_style=True, use_degree='none',
+                 feat_dropout, label_dropout, num_hops=2, prop_type='combine', signature_sampling='torchhd', use_degree='none',
                  signature_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
                  feature_combine="hadamard",adj2=False):
         super(MPLP, self).__init__()
@@ -259,7 +259,7 @@ class MPLP(torch.nn.Module):
         self.label_dropout = label_dropout
         self.num_hops = num_hops
         self.prop_type = prop_type # "MPLP+exactly","MPLP+prop_only","MPLP+combine"
-        self.torchhd_style=torchhd_style
+        self.signature_sampling=signature_sampling
         self.use_degree = use_degree
         self.feature_combine = feature_combine
         self.adj2 = adj2
@@ -271,7 +271,7 @@ class MPLP(torch.nn.Module):
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 8
-        self.nodelabel = NodeLabel(signature_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+        self.nodelabel = NodeLabel(signature_dim, signature_sampling=self.signature_sampling, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 

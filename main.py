@@ -13,7 +13,7 @@ import torch_geometric.transforms as T
 from ogb.linkproppred import Evaluator, PygLinkPropPredDataset
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
-from torch_geometric.utils import (degree,
+from torch_geometric.utils import (degree, add_self_loops,
                                    negative_sampling)
 from torch_sparse import SparseTensor
 from tqdm import tqdm
@@ -26,7 +26,7 @@ from utils import ( get_dataset, data_summary,
 
 
 def train(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target, dataset_name, adj2):
+        mask_target, dataset_name, num_neg, adj2):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
@@ -35,11 +35,13 @@ def train(encoder, predictor, data, split_edge, optimizer, batch_size,
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
-    if dataset_name.startswith("ogbl"):
-        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), data.edge_index.size(), dtype=torch.long,
-                             device=device)
+    if dataset_name.startswith("ogbl") and dataset_name != "ogbl-ddi": # use global negative sampling for ddi
+        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), 
+                                       size=(2, data.edge_index.size(1)*num_neg),
+                                        dtype=torch.long, device=device)
     else:
-        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0))
+        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0),
+                                           num_neg_samples=data.edge_index.size(1)*num_neg)
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
@@ -173,7 +175,7 @@ def main():
     parser.add_argument('--minimum_degree_onehot', type=int, default=-1, help='the minimum degree of hubs with onehot encoding to reduce variance')
     parser.add_argument('--mask_target', type=str2bool, default='True', help='whether to mask the target edges to remove the shortcut')
     parser.add_argument('--use_degree', type=str, default='none', choices=["none","mlp","AA","RA"], help="rescale vector norm to facilitate weighted count")
-    parser.add_argument('--torchhd_style', type=str2bool, default='True', help='whether to use torchhd to randomize vectors')
+    parser.add_argument('--signature_sampling', type=str, default='torchhd', help='whether to use torchhd to randomize vectors', choices=["torchhd","gaussian","onehot"])
     parser.add_argument('--fast_inference', type=str2bool, default='False', help='whether to enable a faster inference by caching the node vectors')
     parser.add_argument('--adj2', type=str2bool, default="False", help='Whether to use 2-hop adj for MPLP+prop_only.')
     
@@ -196,6 +198,7 @@ def main():
     # training setting
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
     parser.add_argument('--epochs', type=int, default=20000)
+    parser.add_argument('--num_neg', type=int, default=1)
     parser.add_argument('--num_hops', type=int, default=2)
     parser.add_argument('--lr', type=float, default=0.005)
     parser.add_argument('--weight_decay', type=float, default=0)
@@ -309,7 +312,7 @@ def main():
             prop_type = args.predictor.split("+")[1]
             predictor = MPLP(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
-                                    prop_type=prop_type, torchhd_style=args.torchhd_style,
+                                    prop_type=prop_type, signature_sampling=args.signature_sampling,
                                     use_degree=args.use_degree, signature_dim=args.signature_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
                                     feature_combine=args.feature_combine, adj2=args.adj2).to(device)
@@ -326,7 +329,8 @@ def main():
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset, adj2=adj2)
+                         optimizer, args.batch_size, args.mask_target, args.dataset, 
+                         num_neg=args.num_neg, adj2=adj2)
 
             results = test(encoder, predictor, data, split_edge,
                             evaluator, args.batch_size, args.use_valedges_as_input, args.fast_inference, adj2=adj2)

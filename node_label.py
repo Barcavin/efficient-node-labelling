@@ -20,11 +20,11 @@ import torchhd
 MINIMUM_SIGNATURE_DIM=64
 
 class NodeLabel(torch.nn.Module):
-    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
+    def __init__(self, dim: int=1024, signature_sampling="torchhd", prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
         self.dim = dim
-        self.torchhd_style = torchhd_style
+        self.signature_sampling = signature_sampling
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
         self.minimum_degree_onehot = minimum_degree_onehot
@@ -63,12 +63,16 @@ class NodeLabel(torch.nn.Module):
             one_hot_dim = 0
         rand_dim = self.dim - one_hot_dim
 
-        if self.torchhd_style:
+        if self.signature_sampling == "torchhd":
             scale = math.sqrt(1 / rand_dim)
             node_vectors = torchhd.random(num_nodes - one_hot_dim, rand_dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
-        else:
+        elif self.signature_sampling == "gaussian":
             node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, rand_dim), dtype=torch.float32, device=device)))
+        elif self.signature_sampling == "onehot":
+            embedding = torch.zeros(num_nodes, num_nodes, device=device)
+            node_vectors = F.one_hot(torch.arange(0, num_nodes)).float().to(device)
+
         embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
 
         if node_weight is not None:
