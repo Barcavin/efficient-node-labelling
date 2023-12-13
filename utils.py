@@ -34,11 +34,15 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
             data, split_edge = filter_by_year(data, split_edge, year)
         if 'edge_weight' in data:
             data.edge_weight = data.edge_weight.view(-1).to(torch.float)
+        if 'edge' in split_edge['train']:
+            key = 'edge'
+        else:
+            key = 'source_node'
         print("-"*20)
-        print(f"train: {split_edge['train']['edge'].shape[0]}")
-        print(f"{split_edge['train']['edge'][:10,:]}")
-        print(f"valid: {split_edge['valid']['edge'].shape[0]}")
-        print(f"test: {split_edge['test']['edge'].shape[0]}")
+        print(f"train: {split_edge['train'][key].shape[0]}")
+        print(f"{split_edge['train'][key]}")
+        print(f"valid: {split_edge['valid'][key].shape[0]}")
+        print(f"test: {split_edge['test'][key].shape[0]}")
         print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
         data = ToSparseTensor(remove_edge_index=False)(data)
         # Use training + validation edges for inference on test set.
