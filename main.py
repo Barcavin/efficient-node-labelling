@@ -9,8 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.transforms as T
-from torch_geometric.utils import (degree, add_self_loops,
-                                   negative_sampling)
+from torch_geometric.utils import degree, to_undirected
 from torch_sparse import SparseTensor
 from tqdm import tqdm
 
@@ -134,7 +133,7 @@ def main():
         else:
             adj2 = None
         if args.minimum_degree_onehot > 0:
-            d_v = degree(data.edge_index[0],data.num_nodes)
+            d_v = degree(to_undirected(data.edge_index)[0],data.num_nodes)
             nodes_to_one_hot = d_v >= args.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             print(f"number of nodes to onehot: {int(one_hot_dim)}")
