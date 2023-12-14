@@ -19,7 +19,7 @@ def get_train_test(args):
         evaluator = Evaluator(name='ogbl-citation2')
         loggers = {
             'MRR': Logger(args.runs, args),
-            'AUC': Logger(args.runs, args),
+            # 'AUC': Logger(args.runs, args),
         }
         return train_mrr, test_mrr, evaluator, loggers
     else:
@@ -46,11 +46,11 @@ def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size,
     total_loss = total_examples = 0
     if dataset_name.startswith("ogbl") and dataset_name != "ogbl-ddi": # use global negative sampling for ddi
         neg_edge_epoch = torch.randint(0, data.adj_t.size(0), 
-                                       size=(2, data.edge_index.size(1)*num_neg),
+                                       size=(2, (data.adj_t.nnz()//2)*num_neg),
                                         dtype=torch.long, device=device)
     else:
         neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0),
-                                           num_neg_samples=data.edge_index.size(1)*num_neg)
+                                           num_neg_samples=(data.adj_t.nnz()//2)*num_neg)
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
@@ -276,14 +276,16 @@ def test_mrr(encoder, predictor, data, split_edge, evaluator,
     results = {
         "MRR": (valid_mrr, test_mrr),
     }
-    neg_valid_pred = neg_valid_pred.view(-1)
-    neg_test_pred = neg_test_pred.view(-1)
-    valid_result = torch.cat((torch.ones(pos_valid_pred.size()), torch.zeros(neg_valid_pred.size())), dim=0)
-    valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
 
-    test_result = torch.cat((torch.ones(pos_test_pred.size()), torch.zeros(neg_test_pred.size())), dim=0)
-    test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
+    # Compute AUC
+    # neg_valid_pred = neg_valid_pred.view(-1)
+    # neg_test_pred = neg_test_pred.view(-1)
+    # valid_result = torch.cat((torch.ones(pos_valid_pred.size()), torch.zeros(neg_valid_pred.size())), dim=0)
+    # valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
 
-    results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
+    # test_result = torch.cat((torch.ones(pos_test_pred.size()), torch.zeros(neg_test_pred.size())), dim=0)
+    # test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
+
+    # results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
 
     return results

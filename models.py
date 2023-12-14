@@ -265,7 +265,7 @@ class MPLP(torch.nn.Module):
         self.adj2 = adj2
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
-        if self.prop_type == 'prop_only':
+        if self.prop_type in ['prop_only', 'precompute']:
             struct_dim = 8
         elif self.prop_type == 'exact':
             struct_dim = 5
@@ -298,6 +298,9 @@ class MPLP(torch.nn.Module):
             edges: [2, E] target edges
             fast_inference: bool. If True, only caching the message-passing without calculating the structural features
         """
+        if cache_mode is None and self.prop_type == "precompute":
+            # when using precompute, forward always use cache_mode == 'use'
+            cache_mode = 'use'
         if cache_mode in ["use","delete"]:
             # no need to compute node_weight
             node_weight = None
@@ -342,6 +345,9 @@ class MPLP(torch.nn.Module):
         logit = self.classifier(x)
         return logit
 
+    def precompute(self, adj):
+        self(None, adj, None, cache_mode="build")
+        return self
 
 
 

@@ -40,7 +40,8 @@ def main():
     parser.add_argument('--adj2', type=str2bool, default="False", help='Whether to use 2-hop adj for MPLP+prop_only.')
     
     # model setting
-    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL","MPLP+exact","MPLP+prop_only","MPLP+combine"])
+    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL",
+    "MPLP+exact","MPLP+prop_only","MPLP+combine","MPLP+precompute"])
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
     parser.add_argument('--xdp', type=float, default=0.2)
@@ -133,7 +134,7 @@ def main():
         else:
             adj2 = None
         if args.minimum_degree_onehot > 0:
-            d_v = degree(to_undirected(data.edge_index)[0],data.num_nodes)
+            d_v = data.adj_t.sum(dim=0).to_dense()
             nodes_to_one_hot = d_v >= args.minimum_degree_onehot
             one_hot_dim = nodes_to_one_hot.sum()
             print(f"number of nodes to onehot: {int(one_hot_dim)}")
@@ -158,7 +159,7 @@ def main():
                             # * (1 + args.jk * (args.num_layers - 1))
         if args.predictor in ['inner','mlp']:
             predictor = LinkPredictor(args.predictor, predictor_in_dim, args.hidden_channels, 1,
-                                    args.num_layers, args.feat_dropout).to(device)
+                                    args.num_layers, args.feat_dropout)
         # elif args.predictor == 'ENL':
         #     predictor = NaiveNodeLabelling(predictor_in_dim, args.hidden_channels,
         #                             args.num_layers, args.feat_dropout, args.num_hops, 
@@ -170,7 +171,11 @@ def main():
                                     prop_type=prop_type, signature_sampling=args.signature_sampling,
                                     use_degree=args.use_degree, signature_dim=args.signature_dim,
                                     minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
-                                    feature_combine=args.feature_combine, adj2=args.adj2).to(device)
+                                    feature_combine=args.feature_combine, adj2=args.adj2)
+            if prop_type == "precompute":
+                assert args.use_degree != "mlp"
+                predictor.precompute(data.adj_t)
+        predictor = predictor.to(device)
 
         encoder.reset_parameters()
         predictor.reset_parameters()
