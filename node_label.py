@@ -294,22 +294,21 @@ class NodeLabel(torch.nn.Module):
             one_hop_x = matmul(adj_t, x)
             two_iter_x = matmul(adj_t, one_hop_x)
 
+            two_iter_x = two_iter_x - degree_one_hop.view(-1,1)*x
+
             # caching
-            self.cached_x = x
             self.cached_degree_one_hop = degree_one_hop
 
             self.cached_one_hop_x = one_hop_x
             self.cached_two_iter_x = two_iter_x
             return
         if cache_mode == 'delete':
-            del self.cached_x
             del self.cached_degree_one_hop
             del self.cached_one_hop_x
             del self.cached_two_iter_x
             return
         if cache_mode == 'use':
             # loading
-            x = self.cached_x
             degree_one_hop = self.cached_degree_one_hop
 
             one_hop_x = self.cached_one_hop_x
@@ -319,8 +318,8 @@ class NodeLabel(torch.nn.Module):
 
         count_1_2_only = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[1]])
         count_2_1_only = dot_product(two_iter_x[edges[0]] , one_hop_x[edges[1]])
-        count_2_2_only = dot_product((two_iter_x[edges[0]]-degree_one_hop[edges[0]].view(-1,1)*x[edges[0]]),\
-                                     (two_iter_x[edges[1]]-degree_one_hop[edges[1]].view(-1,1)*x[edges[1]]))
+        count_2_2_only = dot_product((two_iter_x[edges[0]]),\
+                                     (two_iter_x[edges[1]]))
 
 
         count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[0]])
