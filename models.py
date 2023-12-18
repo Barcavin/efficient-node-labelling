@@ -249,7 +249,7 @@ class LinkPredictor(torch.nn.Module):
 
 class MPLP(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
-                 feat_dropout, label_dropout, num_hops=2, prop_type='combine', torchhd_style=True, use_degree='none',
+                 feat_dropout, label_dropout, num_hops=2, prop_type='combine', signature_sampling='torchhd', use_degree='none',
                  signature_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
                  feature_combine="hadamard",adj2=False):
         super(MPLP, self).__init__()
@@ -259,19 +259,19 @@ class MPLP(torch.nn.Module):
         self.label_dropout = label_dropout
         self.num_hops = num_hops
         self.prop_type = prop_type # "MPLP+exactly","MPLP+prop_only","MPLP+combine"
-        self.torchhd_style=torchhd_style
+        self.signature_sampling=signature_sampling
         self.use_degree = use_degree
         self.feature_combine = feature_combine
         self.adj2 = adj2
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
-        if self.prop_type == 'prop_only':
+        if self.prop_type in ['prop_only', 'precompute']:
             struct_dim = 8
         elif self.prop_type == 'exact':
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 15
-        self.nodelabel = NodeLabel(signature_dim, torchhd_style=self.torchhd_style, prop_type=self.prop_type,
+        self.nodelabel = NodeLabel(signature_dim, signature_sampling=self.signature_sampling, prop_type=self.prop_type,
                                minimum_degree_onehot= minimum_degree_onehot)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 
@@ -298,6 +298,9 @@ class MPLP(torch.nn.Module):
             edges: [2, E] target edges
             fast_inference: bool. If True, only caching the message-passing without calculating the structural features
         """
+        if cache_mode is None and self.prop_type == "precompute":
+            # when using precompute, forward always use cache_mode == 'use'
+            cache_mode = 'use'
         if cache_mode in ["use","delete"]:
             # no need to compute node_weight
             node_weight = None
@@ -342,6 +345,9 @@ class MPLP(torch.nn.Module):
         logit = self.classifier(x)
         return logit
 
+    def precompute(self, adj):
+        self(None, adj, None, cache_mode="build")
+        return self
 
 
 

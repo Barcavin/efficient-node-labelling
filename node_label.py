@@ -20,21 +20,25 @@ import torchhd
 MINIMUM_SIGNATURE_DIM=64
 
 class NodeLabel(torch.nn.Module):
-    def __init__(self, dim: int=1024, torchhd_style=True, prop_type="prop_only",
+    def __init__(self, dim: int=1024, signature_sampling="torchhd", prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
         self.dim = dim
-        self.torchhd_style = torchhd_style
+        self.signature_sampling = signature_sampling
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
         self.minimum_degree_onehot = minimum_degree_onehot
 
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None, cache_mode=None, adj2: SparseTensor=None):
-        if self.training and (cache_mode is not None):
-            raise ValueError("Cannot use cache during training")
+        # if self.training and (cache_mode is not None):
+        #     raise ValueError("Cannot use cache during training")
         if cache_mode is not None:
-            assert self.prop_type == "combine", "only implement cache for combine type"
-            return self.propagation_combine_cache(edges, adj_t, node_weight, cache_mode)
+            if  self.prop_type == "combine": # "only implement cache for combine type"
+                return self.propagation_combine_cache(edges, adj_t, node_weight, cache_mode)
+            elif self.prop_type == "precompute":
+                return self.propagation_prop_only_cache(edges, adj_t, node_weight, cache_mode)
+            else:
+                raise NotImplementedError()
         else:
             if self.prop_type == "prop_only":
                 return self.propagation_only(edges, adj_t, node_weight, adj2=adj2)
@@ -63,12 +67,16 @@ class NodeLabel(torch.nn.Module):
             one_hot_dim = 0
         rand_dim = self.dim - one_hot_dim
 
-        if self.torchhd_style:
+        if self.signature_sampling == "torchhd":
             scale = math.sqrt(1 / rand_dim)
             node_vectors = torchhd.random(num_nodes - one_hot_dim, rand_dim, device=device)
             node_vectors.mul_(scale)  # make them unit vectors
-        else:
+        elif self.signature_sampling == "gaussian":
             node_vectors = F.normalize(torch.nn.init.normal_(torch.empty((num_nodes - one_hot_dim, rand_dim), dtype=torch.float32, device=device)))
+        elif self.signature_sampling == "onehot":
+            embedding = torch.zeros(num_nodes, num_nodes, device=device)
+            node_vectors = F.one_hot(torch.arange(0, num_nodes)).float().to(device)
+
         embedding[~nodes_to_one_hot, one_hot_dim:] = node_vectors
 
         if node_weight is not None:
@@ -297,6 +305,51 @@ class NodeLabel(torch.nn.Module):
             x = self.get_random_node_vectors(adj2, node_weight=None)
             adj2_new = adj2[subset_nodes[subset_unique], subset_nodes]
 
+    def propagation_prop_only_cache(self, edges: Tensor, adj_t: SparseTensor, node_weight=None, cache_mode=None):
+        if cache_mode == 'build':
+            # get the 2-hop subgraph of the target edges
+            x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
+
+
+            degree_one_hop = adj_t.sum(dim=1)
+
+            one_hop_x = matmul(adj_t, x)
+            two_iter_x = matmul(adj_t, one_hop_x)
+
+            two_iter_x = two_iter_x - degree_one_hop.view(-1,1)*x
+
+            # caching
+            self.cached_degree_one_hop = degree_one_hop
+
+            self.cached_one_hop_x = one_hop_x
+            self.cached_two_iter_x = two_iter_x
+            return
+        if cache_mode == 'delete':
+            del self.cached_degree_one_hop
+            del self.cached_one_hop_x
+            del self.cached_two_iter_x
+            return
+        if cache_mode == 'use':
+            # loading
+            degree_one_hop = self.cached_degree_one_hop
+
+            one_hop_x = self.cached_one_hop_x
+            two_iter_x = self.cached_two_iter_x
+        count_1_1 = dot_product(one_hop_x[edges[0]] , one_hop_x[edges[1]])
+
+
+        count_1_2_only = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[1]])
+        count_2_1_only = dot_product(two_iter_x[edges[0]] , one_hop_x[edges[1]])
+        count_2_2_only = dot_product((two_iter_x[edges[0]]),\
+                                     (two_iter_x[edges[1]]))
+
+
+        count_self_1_2 = dot_product(one_hop_x[edges[0]] , two_iter_x[edges[0]])
+        count_self_2_1 = dot_product(one_hop_x[edges[1]] , two_iter_x[edges[1]])
+
+        degree_u = degree_one_hop[edges[0]]
+        degree_v = degree_one_hop[edges[1]]
+        return count_1_1, count_1_2_only, count_2_1_only, count_2_2_only, count_self_1_2, count_self_2_1, degree_u, degree_v
 
 def subgraph(edges: Tensor, adj_t: SparseTensor, k: int=2):
     row,col = edges
