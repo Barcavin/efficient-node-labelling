@@ -34,6 +34,10 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
             data, split_edge = filter_by_year(data, split_edge, year)
         if 'edge_weight' in data:
             data.edge_weight = data.edge_weight.view(-1).to(torch.float)
+            # TEMP FIX: ogbl-collab has directed edges. adj_t.to_symmetric will
+            # double the edge weight. temporary fix like this to avoid too dense graph.
+            if name == "ogbl-collab":
+                data.edge_weight = data.edge_weight/2
         if 'edge' in split_edge['train']:
             key = 'edge'
         else:
