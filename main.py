@@ -358,6 +358,16 @@ def main():
 
             if cnt_wait >= args.patience:
                 break
+            # import json
+            # with open("threshold.json") as f:
+            #     threshold = json.load(f).get(args.dataset,[]) # threshold is a list [(epoch, performance)]
+            # for t_epoch, t_value in threshold:
+            #     if epoch >= t_epoch and results[args.metric][1]*100 < t_value:
+            #         print(f"Discard due to low test performance {results[args.metric][1]} < {t_value} after epoch {t_epoch}")
+            #         break
+            # else:
+            #     continue
+            # break
 
         for key in loggers.keys():
             print(key)
