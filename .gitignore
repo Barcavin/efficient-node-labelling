@@ -151,4 +151,5 @@ data/
 *.log
 *.job
 *.grid
+logs_folder
 

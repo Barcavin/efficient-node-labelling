@@ -163,7 +163,7 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
 def data_summary(name: str, data: Data, header=False, latex=False):
     num_nodes = data.num_nodes
     num_edges = data.num_edges
-    n_degree = degree(data.edge_index[0], num_nodes, dtype=torch.float)
+    n_degree = data.adj_t.sum(dim=1).to(torch.float)
     avg_degree = n_degree.mean().item()
     degree_std = n_degree.std().item()
     max_degree = n_degree.max().long().item()
