@@ -19,6 +19,12 @@ from node_label import spmdiff_, get_two_hop_adj
 from utils import ( get_dataset, data_summary,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
 
+MPLP_dict={
+    "MPLP": "combine",
+    "MPLP+": "prop_only",
+    "MPLP+exact": "exact",
+    "MPLP+precompute": "precompute",
+}
 
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
@@ -40,8 +46,8 @@ def main():
     parser.add_argument('--adj2', type=str2bool, default="False", help='Whether to use 2-hop adj for MPLP+prop_only.')
     
     # model setting
-    parser.add_argument('--predictor', type=str, default='MPLP+combine', choices=["inner","mlp","ENL",
-    "MPLP+exact","MPLP+prop_only","MPLP+combine","MPLP+precompute"])
+    parser.add_argument('--predictor', type=str, default='MPLP', choices=["inner","mlp","ENL",
+    "MPLP+exact","MPLP+","MPLP","MPLP+precompute"])
     parser.add_argument('--encoder', type=str, default='gcn')
     parser.add_argument('--hidden_channels', type=int, default=256)
     parser.add_argument('--xdp', type=float, default=0.2)
@@ -166,7 +172,7 @@ def main():
         #                             args.num_layers, args.feat_dropout, args.num_hops, 
         #                             dgcnn=args.dgcnn, use_degree=args.use_degree).to(device)
         elif 'MPLP' in args.predictor:
-            prop_type = args.predictor.split("+")[1]
+            prop_type = MPLP_dict[args.predictor]
             predictor = MPLP(predictor_in_dim, args.hidden_channels,
                                     args.num_layers, args.feat_dropout, args.label_dropout, args.num_hops, 
                                     prop_type=prop_type, signature_sampling=args.signature_sampling,
