@@ -330,6 +330,8 @@ class NodeLabel(torch.nn.Module):
                 tri = dot_product(xs[1], xs[2])
                 node_level_features.append(tri)
                 x = x - tri.view(-1,1)*xs[0]
+                # remove xs[1]
+                x = x - xs[1]
             if i == 3: # when 4-hop, remove self return in two directions
                 # according to `On the number of cycles in a graph.`
                 x = x - degree_one_hop.pow(2).view(-1,1)*xs[0]
