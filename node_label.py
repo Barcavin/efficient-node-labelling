@@ -21,13 +21,14 @@ MINIMUM_SIGNATURE_DIM=64
 
 class NodeLabel(torch.nn.Module):
     def __init__(self, dim: int=1024, signature_sampling="torchhd", prop_type="prop_only",
-                 minimum_degree_onehot: int=-1):
+                 minimum_degree_onehot: int=-1, num_hops: int=2):
         super().__init__()
         self.dim = dim
         self.signature_sampling = signature_sampling
         self.prop_type = prop_type
         self.cached_two_hop_adj = None
         self.minimum_degree_onehot = minimum_degree_onehot
+        self.num_hops = num_hops
 
     def forward(self, edges: Tensor, adj_t: SparseTensor, node_weight: Tensor=None, cache_mode=None, adj2: SparseTensor=None):
         # if self.training and (cache_mode is not None):
@@ -41,7 +42,10 @@ class NodeLabel(torch.nn.Module):
                 raise NotImplementedError()
         else:
             if self.prop_type == "prop_only":
-                return self.propagation_only(edges, adj_t, node_weight, adj2=adj2)
+                if self.num_hops == 2:
+                    return self.propagation_only(edges, adj_t, node_weight, adj2=adj2)
+                else:
+                    return self.propagation_only_multi(edges, adj_t, node_weight)
             elif self.prop_type == "exact":
                 return self.propagation(edges, adj_t, node_weight)
             elif self.prop_type == "combine":
@@ -304,6 +308,50 @@ class NodeLabel(torch.nn.Module):
             # combine above steps
             x = self.get_random_node_vectors(adj2, node_weight=None)
             adj2_new = adj2[subset_nodes[subset_unique], subset_nodes]
+    
+
+    def propagation_only_multi(self, edges: Tensor, adj_t: SparseTensor, node_weight=None):
+        adj_t, new_edges, subset_nodes = subgraph(edges, adj_t, self.num_hops)
+        node_weight = node_weight[subset_nodes] if node_weight is not None else None
+        x = self.get_random_node_vectors(adj_t, node_weight=node_weight)
+        subset = new_edges.view(-1) # flatten the target nodes [row, col]
+        subset_unique, inverse_indices = torch.unique(subset, return_inverse=True)
+
+        # remove values from adj_t
+        # adj_t = adj_t.set_value(None)
+        degree_one_hop = adj_t.sum(dim=1)
+        xs = [x]
+        node_level_features = [degree_one_hop]
+        for i in range(self.num_hops):
+            x = matmul(adj_t, x)
+            if i == 1: # when 2-hop, remove the self return x
+                x = x - degree_one_hop.view(-1,1)*xs[0]
+            if i == 2: # when 3-hop, remove the triangles
+                tri = dot_product(xs[1], xs[2])
+                node_level_features.append(tri)
+                x = x - tri.view(-1,1)*xs[0]
+            if i == 3: # when 4-hop, remove self return in two directions
+                # according to `On the number of cycles in a graph.`
+                x = x - degree_one_hop.pow(2).view(-1,1)*xs[0]
+            xs.append(x)
+        xs = torch.stack(xs, dim=2) # N x F x num_hops
+        xs_T = xs.permute(0, 2, 1) # N x num_hops x F
+        out = ()
+        # first get node level features
+        for feat in node_level_features:
+            feat = feat.unsqueeze(1)
+            out += (feat[new_edges[0]], feat[new_edges[1]])
+        # then get node level features from est
+        flatten_node_feat_of_edges = torch.bmm(xs_T[subset_unique], xs[subset_unique])[inverse_indices] # 2*#(edges) x num_hops x num_hops
+        flatten_node_feat_of_edges = flatten_node_feat_of_edges.view(2, -1, (self.num_hops+1)**2)
+        out += (flatten_node_feat_of_edges[0], flatten_node_feat_of_edges[1])
+
+        # then get edge level features
+        edge_features = torch.bmm(xs_T[new_edges[0]], xs[new_edges[1]]).view(-1, (self.num_hops+1)**2) #(edges) x num_hops x num_hops
+        out += (edge_features,)
+        return out
+        
+        
 
     def propagation_prop_only_cache(self, edges: Tensor, adj_t: SparseTensor, node_weight=None, cache_mode=None):
         if cache_mode == 'build':

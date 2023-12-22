@@ -265,14 +265,16 @@ class MPLP(torch.nn.Module):
         self.adj2 = adj2
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
-        if self.prop_type in ['prop_only', 'precompute']:
+        if self.prop_type == 'prop_only' and self.num_hops > 2:
+            struct_dim = 4 + 3*(self.num_hops+1)**2
+        elif self.prop_type in ['prop_only', 'precompute']:
             struct_dim = 8
         elif self.prop_type == 'exact':
             struct_dim = 5
         elif self.prop_type == 'combine':
             struct_dim = 15
         self.nodelabel = NodeLabel(signature_dim, signature_sampling=self.signature_sampling, prop_type=self.prop_type,
-                               minimum_degree_onehot= minimum_degree_onehot)
+                               minimum_degree_onehot= minimum_degree_onehot, num_hops=self.num_hops)
         self.struct_encode = MLP(1, struct_dim, struct_dim, struct_dim, self.label_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
 
         dense_dim = struct_dim + in_channels
@@ -328,7 +330,10 @@ class MPLP(torch.nn.Module):
             return
         else:
             propped = self.nodelabel(edges, adj, node_weight=node_weight, cache_mode=cache_mode, adj2=adj2)
-        propped_stack = torch.stack([*propped], dim=1)
+        if propped[0].dim() > 1:
+            propped_stack = torch.cat([*propped], dim=1)
+        else:
+            propped_stack = torch.stack([*propped], dim=1)
         out = self.struct_encode(propped_stack)
 
         if self.in_channels > 0:
