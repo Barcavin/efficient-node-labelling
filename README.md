@@ -1,3 +1,8 @@
+<p align="center">
+<img src="misc/logo2.png" alt="drawing" width="300"/>
+</p>
+
+----
 # Code for Message Passing Link Predictor (MPLP)
 Paper: [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976)
 
