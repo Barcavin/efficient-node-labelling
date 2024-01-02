@@ -17,7 +17,7 @@ This repository contains the code for the paper [Pure Message Passing Can Estima
 |--------------|------------|-------------|
 | Metric       | Hits@100   | MRR         |
 | Current SOTA | 63.22±1.74 | 90.18±0.15 |
-| MPLP+        | 65.24±1.50 | 90.76±0.17  |
+| MPLP+        | 65.24±1.50 | 90.72±0.12 |
 
 
 
@@ -125,7 +125,7 @@ python main.py --dataset=ogbl-ppa --use_feature=False --batch_size=32768 --predi
 ```
 ### Citation2
 ```
-python main.py --dataset=ogbl-citation2 --use_feature=False --batch_size=261424 --predictor=MPLP+ --use_degree=RA --patience=20 --log_steps=1 --xdp=0.8 --feat_dropout=0.05 --label_dropout=0.6 --encoder=puregcn --use_embedding=True --signature_dim=512 --minimum_degree_onehot=1500 --runs=10 --test_batch_size=3000000
+python main.py --dataset=ogbl-citation2 --use_feature=False --batch_size=261424 --predictor=MPLP+ --use_degree=RA --patience=20 --log_steps=1 --xdp=0.8 --feat_dropout=0.05 --label_dropout=0.6 --encoder=puregcn --use_embedding=True --signature_dim=512 --minimum_degree_onehot=1500 --test_batch_size=3000000
 ```
 ### USAir
 ```
