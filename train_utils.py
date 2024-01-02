@@ -44,7 +44,9 @@ def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size,
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
-    if dataset_name.startswith("ogbl") and dataset_name != "ogbl-ddi": # use global negative sampling for ddi
+    if dataset_name == "ogbl-vessel":
+        neg_edge_epoch = split_edge['train']['edge_neg'].to(device).t()
+    elif dataset_name.startswith("ogbl") and dataset_name != "ogbl-ddi": # use global negative sampling for ddi
         num_pos_max = max(data.adj_t.nnz()//2, pos_train_edge.size(0))
         neg_edge_epoch = torch.randint(0, data.adj_t.size(0), 
                                        size=(2, num_pos_max*num_neg),

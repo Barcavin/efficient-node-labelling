@@ -32,6 +32,11 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         split_edge = dataset.get_edge_split()
         if name == 'ogbl-collab' and year > 0:  # filter out training edges before args.year
             data, split_edge = filter_by_year(data, split_edge, year)
+        if name == 'ogbl-vessel':
+            # normalize x,y,z coordinates  
+            data.x[:, 0] = torch.nn.functional.normalize(data.x[:, 0], dim=0)
+            data.x[:, 1] = torch.nn.functional.normalize(data.x[:, 1], dim=0)
+            data.x[:, 2] = torch.nn.functional.normalize(data.x[:, 2], dim=0)
         if 'edge_weight' in data:
             data.edge_weight = data.edge_weight.view(-1).to(torch.float)
             # TEMP FIX: ogbl-collab has directed edges. adj_t.to_symmetric will
