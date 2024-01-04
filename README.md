@@ -114,11 +114,16 @@ python main.py --dataset=ogbl-collab --use_feature=False --batch_size=8192 --mas
 ```
 [/logs/no_feat_ogbl-collab_jobID_769579_PID_606228_1690552809.log/]: #
 
+### Vessel
+```
+python main.py --dataset=ogbl-vessel --batch_size=32768 --test_batch_size=32768 --predictor=MPLP --use_degree=RA --patience=20 --log_steps=1 --xdp=0.5 --feat_dropout=0.6 --label_dropout=0.05 --metric=AUC
+```
 </details>
 
 
 <details>
 <summary>Commands to reproduce the results of MPLP+ reported in the paper</summary>
+
 ### PPA
 ```
 python main.py --dataset=ogbl-ppa --use_feature=False --batch_size=32768 --predictor=MPLP+ --use_degree=RA --patience=20 --log_steps=1 --xdp=0.5 --label_dropout=0.6 --use_embedding=True --metric=Hits@100 --runs=10 --test_batch_size=32768
@@ -178,6 +183,10 @@ python main.py --dataset=photos --xdp=0.8 --label_dropout=0.2 --batch_size=4096 
 ### Collab
 ```
 python main.py --dataset=ogbl-collab --use_embedding=True --batch_size=32768 --predictor=MPLP+ --use_degree=mlp --patience=40 --log_steps=1 --minimum_degree_onehot=100 --year=2010 --use_valedges_as_input=True --xdp=0.8 --feat_dropout=0.2 --label_dropout=0.2
+```
+### Vessel
+```
+python main.py --dataset=ogbl-vessel --use_feature=False --batch_size=32768 --test_batch_size=32768 --predictor=MPLP+ --patience=20 --log_steps=1 --xdp=0.5 --feat_dropout=0.2 --label_dropout=0.05 --metric=AUC
 ```
 
 </details>
