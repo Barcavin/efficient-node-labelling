@@ -15,50 +15,36 @@ from logger import Logger
 
 
 def get_train_test(args):
-    if args.dataset == "ogbl-citation2":
-        evaluator = Evaluator(name='ogbl-citation2')
-        loggers = {
-            'MRR': Logger(args.runs, args),
-            # 'AUC': Logger(args.runs, args),
-        }
-        return train_mrr, test_mrr, evaluator, loggers
-    else:
-        evaluator = Evaluator(name='ogbl-ddi')
-        loggers = {
-            'Hits@10': Logger(args.runs, args),
-            'Hits@20': Logger(args.runs, args),
-            'Hits@50': Logger(args.runs, args),
-            'Hits@100': Logger(args.runs, args),
-            'AUC': Logger(args.runs, args),
-        }
-        return train_hits, test_hits, evaluator, loggers
+    inference_datasets = args.inference_datasets.split(',')
+    loggers = {}
+    for one_dataset_name in inference_datasets + ['']:
+        loggers.update({
+            f'Hits@10{one_dataset_name}': Logger(args.runs, args),
+            f'Hits@20{one_dataset_name}': Logger(args.runs, args),
+            f'Hits@50{one_dataset_name}': Logger(args.runs, args),
+            f'Hits@100{one_dataset_name}': Logger(args.runs, args),
+            f'AUC{one_dataset_name}': Logger(args.runs, args),
+        })
+    evaluator = Evaluator(name='ogbl-ddi')
+    return train_hits, test_hits, evaluator, loggers
 
 
-def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size, 
-        mask_target, dataset_name, num_neg, adj2):
+def train_hits(encoder, predictor, data, optimizer, batch_size, 
+        mask_target):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
     criterion = BCEWithLogitsLoss(reduction='mean')
-    pos_train_edge = split_edge['train']['edge'].to(device)
+    pos_train_edge = data.train_pos_edge_index
     
     optimizer.zero_grad()
     total_loss = total_examples = 0
-    if dataset_name == "ogbl-vessel":
-        neg_edge_epoch = split_edge['train']['edge_neg'].to(device).t()
-    elif dataset_name.startswith("ogbl") and dataset_name != "ogbl-ddi": # use global negative sampling for ddi
-        num_pos_max = max(data.adj_t.nnz()//2, pos_train_edge.size(0))
-        neg_edge_epoch = torch.randint(0, data.adj_t.size(0), 
-                                       size=(2, num_pos_max*num_neg),
-                                        dtype=torch.long, device=device)
-    else:
-        neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0),
-                                           num_neg_samples=(data.adj_t.nnz()//2)*num_neg)
+    neg_edge_epoch = data.train_neg_edge_index
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
                            shuffle=True),desc='Train'):
-        edge = pos_train_edge[perm].t()
+        edge = pos_train_edge[:,perm]
         if mask_target:
             adj_t = data.adj_t
             undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
@@ -73,7 +59,7 @@ def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size,
         neg_edge = neg_edge_epoch[:,perm]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
-        out = predictor(h, adj_t, train_edges, adj2 = adj2).squeeze()
+        out = predictor(h, adj_t, train_edges).squeeze()
         loss = criterion(out, train_label)
 
         loss.backward()
@@ -91,8 +77,8 @@ def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size,
 
 
 @torch.no_grad()
-def test_hits(encoder, predictor, data, split_edge, evaluator, 
-         batch_size, use_valedges_as_input, fast_inference, adj2):
+def test_hits(encoder, predictor, data, evaluator, 
+         batch_size, use_valedges_as_input, fast_inference, inference_datasets):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -100,24 +86,24 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
     h = encoder(data.x, adj_t)
 
     def test_split(split, cache_mode=None):
-        pos_test_edge = split_edge[split]['edge'].to(device)
-        neg_test_edge = split_edge[split]['edge_neg'].to(device)
+        pos_test_edge = getattr(data, f"{split}_pos_edge_index")
+        neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
         pos_test_preds = []
-        for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
-            edge = pos_test_edge[perm].t()
-            out = predictor(h, adj_t, edge, cache_mode=cache_mode, adj2 = adj2)
+        for perm in DataLoader(range(pos_test_edge.size(1)), batch_size):
+            edge = pos_test_edge[:,perm]
+            out = predictor(h, adj_t, edge, cache_mode=cache_mode)
             pos_test_preds += [out.squeeze().cpu()]
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
         neg_test_preds = []
-        for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
-            edge = neg_test_edge[perm].t()
-            neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
+        for perm in DataLoader(range(neg_test_edge.size(1)), batch_size):
+            edge = neg_test_edge[:,perm]
+            neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode).squeeze().cpu()]
         neg_test_pred = torch.cat(neg_test_preds, dim=0)
         return pos_test_pred, neg_test_pred
 
-    pos_valid_pred, neg_valid_pred = test_split('valid')
+    val_pos_pred, val_neg_pred = test_split('val')
 
     start_time = time.perf_counter()
     if use_valedges_as_input:
@@ -130,7 +116,7 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
     else:
         cache_mode=None
     
-    pos_test_pred, neg_test_pred = test_split('test', cache_mode=cache_mode)
+    test_pos_pred, test_neg_pred = test_split('test', cache_mode=cache_mode)
     end_time = time.perf_counter()
     total_time = end_time - start_time
     print(f'Inference for one epoch Took {total_time:.4f} seconds')
@@ -138,6 +124,23 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
         # delete cache
         predictor(h, adj_t, None, cache_mode='delete')
     
+    results = evaluation(val_pos_pred, val_neg_pred, test_pos_pred, test_neg_pred, evaluator)
+    slice_dict = data._slice_dict
+    preds = ()
+    for name_prefix in ["val_pos", "val_neg", "test_pos", "test_neg"]:
+        # locals()[f"{name_prefix}_edge_index_split"]
+        splits = slice_dict[f"{name_prefix}_edge_index"][1:] - slice_dict[f"{name_prefix}_edge_index"][:-1]
+        # locals()[f"{name_prefix}_preds"] = torch.split(locals()[f"{name_prefix}_pred"],splits.tolist(),0)
+        preds += (torch.split(locals()[f"{name_prefix}_pred"],splits.tolist(),0),)
+    
+    for i, one_dataset_name in enumerate(inference_datasets.split(',')):
+        results1 = evaluation(preds[0][i],preds[1][i],preds[2][i],preds[3][i], evaluator=evaluator)
+        for key, value in results1.items():
+            results[f"{key}{one_dataset_name}"] = value        
+
+    return results
+
+def evaluation(pos_valid_pred, neg_valid_pred, pos_test_pred, neg_test_pred, evaluator):
     results = {}
     for K in [10, 20, 50, 100]:
         evaluator.K = K
@@ -159,10 +162,7 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
     test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
 
     results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
-
     return results
-
-
 
 
 def train_mrr(encoder, predictor, data, split_edge, optimizer, batch_size, 

@@ -18,6 +18,54 @@ from torch_geometric.utils import (add_self_loops, degree,
                                    to_undirected, train_test_split_edges, coalesce)
 from torch_sparse import SparseTensor                         
 
+from torch_geometric.data.collate import collate
+
+
+def get_pretrain_data(root, pretrain_datasets):
+    pretrain_datasets = pretrain_datasets.split(',')
+    pretrain_data = []
+    for name in pretrain_datasets:
+        data, _ = get_dataset(root, name)
+        # to_undirected
+        # if is_undirected(data.edge_index) == False: #in case the dataset is directed
+
+        data.edge_index = to_undirected(data.edge_index)
+        row, col = data.edge_index
+        train_pos_edge_index = data.edge_index[:, row < col]
+        data.train_pos_edge_index = train_pos_edge_index
+
+        # negative sampling
+        neg_edge_index = negative_sampling(
+            edge_index=data.edge_index, num_nodes=data.num_nodes,
+            num_neg_samples=train_pos_edge_index.size(1))
+        data.train_neg_edge_index = neg_edge_index
+        pretrain_data.append(data)
+    # merge pretrain data
+    data, slice_dict, inc_dict = collate(Data, pretrain_data)
+    data = ToSparseTensor()(data)
+    data._slice_dict = slice_dict
+    data._inc_dict = inc_dict
+    data._num_graphs = len(pretrain_data)
+    return data
+
+
+def get_inference_data(root, inference_datasets):
+    inference_datasets = inference_datasets.split(',')
+    inference_data = []
+    for name in inference_datasets:
+        data, split_edge = get_data_split(root, name, 0.05, 0.1)
+        data.val_pos_edge_index = split_edge['valid']['edge'].t()
+        data.val_neg_edge_index = split_edge['valid']['edge_neg'].t()
+        data.test_pos_edge_index = split_edge['test']['edge'].t()
+        data.test_neg_edge_index = split_edge['test']['edge_neg'].t()
+        inference_data.append(data)
+    # merge pretrain data
+    data, slice_dict, inc_dict = collate(Data, inference_data)
+    data = ToSparseTensor()(data)
+    data._slice_dict = slice_dict
+    data._inc_dict = inc_dict
+    data._num_graphs = len(inference_data)
+    return data
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
