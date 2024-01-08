@@ -71,6 +71,7 @@ def get_pretrain_data(root, pretrain_datasets, train_samples=None):
     data._slice_dict = slice_dict
     data._inc_dict = inc_dict
     data._num_graphs = len(pretrain_data)
+    data.num_nodes = sum([d.num_nodes for d in pretrain_data])
     return data
 
 
@@ -91,6 +92,7 @@ def get_inference_data(root, inference_datasets, run):
     data._slice_dict = slice_dict
     data._inc_dict = inc_dict
     data._num_graphs = len(inference_data)
+    data.num_nodes = sum([d.num_nodes for d in inference_data])
     return data
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
@@ -351,11 +353,22 @@ def filter_by_year(data, split_edge, year):
 def get_git_revision_short_hash() -> str:
     return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     
-def save_model(state_dict, dir, appendix, cmd, git_hash, hostname):
+
+
+MODEL_ARGS = ["hidden_channels","num_layers", "feat_dropout", "label_dropout", "num_hops", 
+              "signature_sampling","use_degree", "signature_dim","minimum_degree_onehot","batchnorm_affine","feature_combine","adj2", "xdp", "use_feature", "jk", "encoder",
+              "predictor"]
+
+def save_model(state_dict, dir, appendix, cmd, git_hash, hostname, args):
     checkpoints = Path(dir)
     model_folder = checkpoints / appendix
     model_folder.mkdir(parents=True, exist_ok=True)
     
+    # dump model args
+    args_dict = {}
+    for arg in MODEL_ARGS:
+        args_dict[arg] = args.__dict__[arg]
+    state_dict['args'] = args_dict
     torch.save(state_dict, model_folder / "model.pt")
     print(f"save model to {model_folder / 'model.pt'}")
 
@@ -374,3 +387,8 @@ def load_model(encoder, predictor, load_model_path, state_dict=None):
     encoder.load_state_dict(state_dict['encoder'])
     predictor.load_state_dict(state_dict['predictor'])
     print(f"load model from {load_model_path}")
+
+def update_args(args, load_model_path):
+    state_dict = torch.load(load_model_path)
+    args.__dict__.update(state_dict['args'])
+    return args

@@ -17,7 +17,7 @@ from tqdm import tqdm
 from train_utils import get_train_test
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
 from utils import ( data_summary, get_pretrain_data, get_inference_data, save_model, load_model,
-                   set_random_seeds, str2bool, get_git_revision_short_hash)
+                   set_random_seeds, str2bool, get_git_revision_short_hash, update_args)
 
 MPLP_dict={
     "MPLP": "combine",
@@ -99,7 +99,6 @@ def main():
     predictor_in_dim = 0
     args.minimum_degree_onehot = -1
     args.adj2 = False
-    emb = None
 
     # if args.print_summary:
     #     data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
@@ -123,19 +122,28 @@ def main():
     train, test, evaluator, loggers = get_train_test(args)
 
     train_data = get_pretrain_data(args.dataset_dir, args.pretrain_datasets, args.train_samples).to(device)
+    train_data_num_features = train_data.num_features
     val_max = 0.0
     test_data = get_inference_data(args.dataset_dir, args.inference_datasets, 0).to(device)
-    # TODO: override args when loading model
+    # override args when loading model
+    if args.load_model:
+        train_data_num_features = 0
+        args = update_args(args, args.load_model)
+        args_str = "###### Override args ######\n" + args.__repr__()
+        print(args_str)
+        with open(final_log_path, 'a') as f:
+            print(args_str, file=f)
+        
     if 'gcn' in args.encoder:
-        encoder = GCN(train_data.num_features, args.hidden_channels,
+        encoder = GCN(train_data_num_features, args.hidden_channels,
                     args.hidden_channels, args.num_layers,
-                    args.feat_dropout, args.xdp, args.use_feature, args.jk, args.encoder, emb).to(device)
+                    args.feat_dropout, args.xdp, args.use_feature, args.jk, args.encoder).to(device)
     elif args.encoder == 'sage':
-        encoder = SAGE(train_data.num_features, args.hidden_channels,
+        encoder = SAGE(train_data_num_features, args.hidden_channels,
                     args.hidden_channels, args.num_layers,
-                    args.feat_dropout, args.xdp, args.use_feature, args.jk, emb).to(device)
+                    args.feat_dropout, args.xdp, args.use_feature, args.jk).to(device)
     elif args.encoder == 'mlp':
-        encoder = MLP(args.num_layers, train_data.num_features, 
+        encoder = MLP(args.num_layers, train_data_num_features, 
                         args.hidden_channels, args.hidden_channels, args.dropout).to(device)
                         # * (1 + args.jk * (args.num_layers - 1))
     if args.predictor in ['inner','mlp']:
@@ -168,7 +176,11 @@ def main():
     cnt_wait = 0
     best_val = 0.0
     run = 0
+    state_dict = None
     for epoch in range(1, 1 + args.epochs):
+        if args.load_model:
+            # no need to train
+            break
         loss = train(encoder, predictor, train_data,
                         optimizer, args.batch_size, args.mask_target)
 
@@ -185,7 +197,7 @@ def main():
             if args.save_model:
                 # save best model
                 save_model(state_dict, args.save_model, appendix,
-                        cmd_input, git_hash, hostname)
+                        cmd_input, git_hash, hostname, args)
         else:
             cnt_wait +=1
 

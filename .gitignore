@@ -152,4 +152,5 @@ data/
 *.job
 *.grid
 logs_folder
+checkpoints/
 
