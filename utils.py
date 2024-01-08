@@ -73,11 +73,11 @@ def get_pretrain_data(root, pretrain_datasets, train_samples=None):
     return data
 
 
-def get_inference_data(root, inference_datasets):
+def get_inference_data(root, inference_datasets, run):
     inference_datasets = inference_datasets.split(',')
     inference_data = []
     for name in inference_datasets:
-        data, split_edge = get_data_split(root, name, 0.1, 0.2)
+        data, split_edge = get_data_split(root, name, 0.1, 0.2, run)
         data.val_pos_edge_index = split_edge['valid']['edge'].t()
         data.val_neg_edge_index = split_edge['valid']['edge_neg'].t()
         data.test_pos_edge_index = split_edge['test']['edge'].t()

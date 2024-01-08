@@ -117,10 +117,10 @@ def main():
     train, test, evaluator, loggers = get_train_test(args)
 
     train_data = get_pretrain_data(args.dataset_dir, args.pretrain_datasets, args.train_samples).to(device)
-    test_data = get_inference_data(args.dataset_dir, args.inference_datasets).to(device)
     val_max = 0.0
     for run in range(args.runs):
         emb = None
+        test_data = get_inference_data(args.dataset_dir, args.inference_datasets, run).to(device)
         if 'gcn' in args.encoder:
             encoder = GCN(train_data.num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
