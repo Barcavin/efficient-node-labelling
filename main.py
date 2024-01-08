@@ -29,8 +29,8 @@ MPLP_dict={
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
     # dataset setting
-    parser.add_argument('--pretrain_datasets', type=str, default="Yeast,Ecoli,Power,Router")
-    parser.add_argument('--inference_datasets', type=str, default='USAir,Celegans')
+    parser.add_argument('--pretrain_datasets', type=str, default="Router,Yeast,Ecoli,Power,PolBlogs,Physics,Citeseer,Pubmed,musae-twitch,musae-github")
+    parser.add_argument('--inference_datasets', type=str, default='Celegans,USAir,PB,NS,Cora,CS,Photo,musae-facebook,syn-TRIANGULAR,syn-GRID')
     parser.add_argument('--val_ratio', type=float, default=0.1)
     parser.add_argument('--test_ratio', type=float, default=0.2)
     parser.add_argument('--dataset_dir', type=str, default='./data')
@@ -60,6 +60,7 @@ def main():
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
 
     # training setting
+    parser.add_argument('--train_samples', type=int, default=None, help='number of training samples per pretrain dataset')
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
     parser.add_argument('--test_batch_size', type=int, default=100000)
     parser.add_argument('--epochs', type=int, default=20000)
@@ -114,11 +115,10 @@ def main():
     
     train, test, evaluator, loggers = get_train_test(args)
 
-    train_data = get_pretrain_data(args.dataset_dir, args.pretrain_datasets)
-    test_data = get_inference_data(args.dataset_dir, args.inference_datasets)
+    train_data = get_pretrain_data(args.dataset_dir, args.pretrain_datasets, args.train_samples).to(device)
+    test_data = get_inference_data(args.dataset_dir, args.inference_datasets).to(device)
     val_max = 0.0
     for run in range(args.runs):
-        train_data = train_data.to(device)
         emb = None
         if 'gcn' in args.encoder:
             encoder = GCN(train_data.num_features, args.hidden_channels,

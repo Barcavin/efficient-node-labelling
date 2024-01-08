@@ -42,7 +42,7 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
     neg_edge_epoch = data.train_neg_edge_index
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
-    for perm in tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
+    for perm in tqdm(DataLoader(range(pos_train_edge.size(1)), batch_size,
                            shuffle=True),desc='Train'):
         edge = pos_train_edge[:,perm]
         if mask_target:

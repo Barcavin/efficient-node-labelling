@@ -19,9 +19,26 @@ from torch_geometric.utils import (add_self_loops, degree,
 from torch_sparse import SparseTensor                         
 
 from torch_geometric.data.collate import collate
+from custom_dataset import SyntheticDataset
+from snap_dataset import SNAPDataset
 
 
-def get_pretrain_data(root, pretrain_datasets):
+def clean_Data_attr(data):
+    data_attr = [
+        "edge_index",
+        # "edge_weight",
+    ] + [f"{split}_{label}_edge_index" for split in ["train", "val", "test"] for label in ["pos", "neg"]]
+
+    # call __setitem__
+    data.num_nodes = data.num_nodes
+
+    # remove unused attributes
+    for attr in data.keys():
+        if attr not in data_attr:
+            del data[attr]
+    return data
+
+def get_pretrain_data(root, pretrain_datasets, train_samples=None):
     pretrain_datasets = pretrain_datasets.split(',')
     pretrain_data = []
     for name in pretrain_datasets:
@@ -32,6 +49,11 @@ def get_pretrain_data(root, pretrain_datasets):
         data.edge_index = to_undirected(data.edge_index)
         row, col = data.edge_index
         train_pos_edge_index = data.edge_index[:, row < col]
+        if train_samples is not None:
+            # randomly select train_samples from train_pos_edge_index
+            perm = torch.randperm(train_pos_edge_index.size(1))
+            perm = perm[:train_samples]
+            train_pos_edge_index = train_pos_edge_index[:, perm]
         data.train_pos_edge_index = train_pos_edge_index
 
         # negative sampling
@@ -39,6 +61,7 @@ def get_pretrain_data(root, pretrain_datasets):
             edge_index=data.edge_index, num_nodes=data.num_nodes,
             num_neg_samples=train_pos_edge_index.size(1))
         data.train_neg_edge_index = neg_edge_index
+        data = clean_Data_attr(data)
         pretrain_data.append(data)
     # merge pretrain data
     data, slice_dict, inc_dict = collate(Data, pretrain_data)
@@ -53,11 +76,12 @@ def get_inference_data(root, inference_datasets):
     inference_datasets = inference_datasets.split(',')
     inference_data = []
     for name in inference_datasets:
-        data, split_edge = get_data_split(root, name, 0.05, 0.1)
+        data, split_edge = get_data_split(root, name, 0.1, 0.2)
         data.val_pos_edge_index = split_edge['valid']['edge'].t()
         data.val_neg_edge_index = split_edge['valid']['edge_neg'].t()
         data.test_pos_edge_index = split_edge['test']['edge'].t()
         data.test_neg_edge_index = split_edge['test']['edge_neg'].t()
+        data = clean_Data_attr(data)
         inference_data.append(data)
     # merge pretrain data
     data, slice_dict, inc_dict = collate(Data, inference_data)
@@ -120,20 +144,31 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         return data, split_edge
 
     pyg_dataset_dict = {
-        'cora': (datasets.Planetoid, 'Cora'),
-        'citeseer': (datasets.Planetoid, 'Citeseer'),
-        'pubmed': (datasets.Planetoid, 'Pubmed'),
-        'cs': (datasets.Coauthor, 'CS'),
-        'physics': (datasets.Coauthor, 'physics'),
-        'computers': (datasets.Amazon, 'Computers'),
-        'photos': (datasets.Amazon, 'Photo')
+        'Cora': (datasets.Planetoid, {'name':'Cora'}),
+        'Citeseer': (datasets.Planetoid, {'name':'Citeseer'}),
+        'Pubmed': (datasets.Planetoid, {'name':'Pubmed'}),
+        'CS': (datasets.Coauthor, {'name':'CS'}),
+        'Physics': (datasets.Coauthor, {'name':'physics'}),
+        'Computers': (datasets.Amazon, {'name':'Computers'}),
+        'Photo': (datasets.Amazon, {'name':'Photo'}),
+        'PolBlogs': (datasets.PolBlogs, {}),
+        'musae-twitch':(SNAPDataset, {'name':'musae-twitch'}),
+        'musae-github':(SNAPDataset, {'name':'musae-github'}),
+        'musae-facebook':(SNAPDataset, {'name':'musae-facebook'}),
+        'syn-TRIANGULAR':(SyntheticDataset, {'name':'TRIANGULAR'}),
+        'syn-GRID':(SyntheticDataset, {'name':'GRID'}),
     }
-
     # assert name in pyg_dataset_dict, "Dataset must be in {}".format(list(pyg_dataset_dict.keys()))
 
     if name in pyg_dataset_dict:
-        dataset_class, name = pyg_dataset_dict[name]
-        data = dataset_class(root, name=name, transform=ToUndirected())[0]
+        dataset_class, kwargs = pyg_dataset_dict[name]
+        dataset = dataset_class(root=root, transform=ToUndirected(), **kwargs)
+        data, _, _ = collate(
+                dataset[0].__class__,
+                data_list=list(dataset),
+                increment=True,
+                add_batch=False,
+            )
     else:
         data = load_unsplitted_data(root, name)
     return data, None
