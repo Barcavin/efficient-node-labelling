@@ -1,4 +1,5 @@
 import argparse
+import json
 import math
 import random
 from pathlib import Path
@@ -350,3 +351,26 @@ def filter_by_year(data, split_edge, year):
 def get_git_revision_short_hash() -> str:
     return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     
+def save_model(state_dict, dir, appendix, cmd, git_hash, hostname):
+    checkpoints = Path(dir)
+    model_folder = checkpoints / appendix
+    model_folder.mkdir(parents=True, exist_ok=True)
+    
+    torch.save(state_dict, model_folder / "model.pt")
+    print(f"save model to {model_folder / 'model.pt'}")
+
+    # save command and git hash
+    j = {}
+    j["CMD"] = cmd
+    j["git_hash"] = git_hash
+    j["hostname"] = hostname
+    with open(model_folder/f"config.json",'w') as f:
+       json.dump(j, f, indent = 6)
+    return model_folder / 'model.pt'
+
+def load_model(encoder, predictor, load_model_path, state_dict=None):
+    if load_model_path is not None:
+        state_dict = torch.load(load_model_path)
+    encoder.load_state_dict(state_dict['encoder'])
+    predictor.load_state_dict(state_dict['predictor'])
+    print(f"load model from {load_model_path}")

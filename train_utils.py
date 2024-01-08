@@ -17,7 +17,7 @@ from logger import Logger
 def get_train_test(args):
     inference_datasets = args.inference_datasets.split(',')
     loggers = {}
-    for one_dataset_name in inference_datasets + ['']:
+    for one_dataset_name in inference_datasets + ['#']:
         loggers.update({
             f'Hits@10{one_dataset_name}': Logger(args.runs, args),
             f'Hits@20{one_dataset_name}': Logger(args.runs, args),
@@ -124,7 +124,12 @@ def test_hits(encoder, predictor, data, evaluator,
         # delete cache
         predictor(h, adj_t, None, cache_mode='delete')
     
-    results = evaluation(val_pos_pred, val_neg_pred, test_pos_pred, test_neg_pred, evaluator)
+    results = {}
+    if inference_datasets == "#": # return results if no inference_datasets provided
+        results1 = evaluation(val_pos_pred, val_neg_pred, test_pos_pred, test_neg_pred, evaluator)
+        for key, value in results1.items():
+            results[f"{key}#"] = value
+        return results
     slice_dict = data._slice_dict
     preds = ()
     for name_prefix in ["val_pos", "val_neg", "test_pos", "test_neg"]:

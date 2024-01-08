@@ -22,12 +22,18 @@ class Logger(object):
 
     def print_statistics(self, run=None, file=sys.stdout):
         if run is not None:
+            if run < 0  or run >= len(self.results):
+                print(f'No Result', file=file)
+                return
             result = 100 * torch.tensor(self.results[run])
             argmax = self.get_argmax(result)
             print(f'Run {run + 1:02d}:',file=file)
             print(f'Highest Valid: {result[:, 0].max():.2f}',file=file)
             print(f'   Final Test: {result[argmax, 1]:.2f}',file=file)
         else:
+            if len(self.results[0]) == 0:
+                print(f'No Result', file=file)
+                return
             best_results = []
             for r in self.results:
                 r = self.results[r]
