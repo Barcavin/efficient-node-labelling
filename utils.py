@@ -18,7 +18,6 @@ from torch_geometric.utils import (add_self_loops, degree,
                                    to_undirected, train_test_split_edges, coalesce)
 from torch_sparse import SparseTensor                         
 
-
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
         dataset = PygLinkPropPredDataset(name=name, root=root)
@@ -72,20 +71,31 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         return data, split_edge
 
     pyg_dataset_dict = {
-        'cora': (datasets.Planetoid, 'Cora'),
-        'citeseer': (datasets.Planetoid, 'Citeseer'),
-        'pubmed': (datasets.Planetoid, 'Pubmed'),
-        'cs': (datasets.Coauthor, 'CS'),
-        'physics': (datasets.Coauthor, 'physics'),
-        'computers': (datasets.Amazon, 'Computers'),
-        'photos': (datasets.Amazon, 'Photo')
+        'Cora': (datasets.Planetoid, {'name':'Cora'}),
+        'Citeseer': (datasets.Planetoid, {'name':'Citeseer'}),
+        'Pubmed': (datasets.Planetoid, {'name':'Pubmed'}),
+        'CS': (datasets.Coauthor, {'name':'CS'}),
+        'Physics': (datasets.Coauthor, {'name':'physics'}),
+        'Computers': (datasets.Amazon, {'name':'Computers'}),
+        'Photo': (datasets.Amazon, {'name':'Photo'}),
+        'PolBlogs': (datasets.PolBlogs, {}),
+        'musae-twitch':(SNAPDataset, {'name':'musae-twitch'}),
+        'musae-github':(SNAPDataset, {'name':'musae-github'}),
+        'musae-facebook':(SNAPDataset, {'name':'musae-facebook'}),
+        'syn-TRIANGULAR':(SyntheticDataset, {'name':'TRIANGULAR'}),
+        'syn-GRID':(SyntheticDataset, {'name':'GRID'}),
     }
-
     # assert name in pyg_dataset_dict, "Dataset must be in {}".format(list(pyg_dataset_dict.keys()))
 
     if name in pyg_dataset_dict:
-        dataset_class, name = pyg_dataset_dict[name]
-        data = dataset_class(root, name=name, transform=ToUndirected())[0]
+        dataset_class, kwargs = pyg_dataset_dict[name]
+        dataset = dataset_class(root=root, transform=ToUndirected(), **kwargs)
+        data, _, _ = collate(
+                dataset[0].__class__,
+                data_list=list(dataset),
+                increment=True,
+                add_batch=False,
+            )
     else:
         data = load_unsplitted_data(root, name)
     return data, None
