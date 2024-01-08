@@ -2,6 +2,7 @@ import argparse
 import math
 import random
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import torch
@@ -345,4 +346,7 @@ def filter_by_year(data, split_edge, year):
     data.edge_index = new_edge_index
     data.edge_weight = new_edge_weight.unsqueeze(-1)
     return data, split_edge
+
+def get_git_revision_short_hash() -> str:
+    return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     

@@ -15,9 +15,8 @@ from tqdm import tqdm
 
 from train_utils import get_train_test
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
-from node_label import spmdiff_, get_two_hop_adj
-from utils import ( get_dataset, data_summary, get_pretrain_data, get_inference_data,
-                   set_random_seeds, str2bool, get_data_split, initial_embedding)
+from utils import ( data_summary, get_pretrain_data, get_inference_data,
+                   set_random_seeds, str2bool, get_git_revision_short_hash)
 
 MPLP_dict={
     "MPLP": "combine",
@@ -103,15 +102,17 @@ def main():
     # else:
     print(args)
     final_log_path = Path(args.log_dir) / f"Pretrain_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
-    final_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(final_log_path, 'w') as f:
-        print(args, file=f)
-    
     # Save command line input.
     cmd_input = 'python ' + ' '.join(sys.argv) + '\n'
     print('Command line input: ' + cmd_input + ' is saved.')
-    with open(final_log_path, 'a') as f:
+    # Save git revision.
+    git_hash = get_git_revision_short_hash()
+    final_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_log_path, 'w') as f:
+        print(args, file=f)
         f.write('\n' + cmd_input)
+        print(f"HOSTNAME: {os.getenv('HOSTNAME','None')}", file=f)
+        print('Git revision: ' + git_hash + '\n', file=f)
     
     train, test, evaluator, loggers = get_train_test(args)
 
