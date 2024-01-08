@@ -9,7 +9,7 @@ from ogb.linkproppred import Evaluator
 from torch_geometric.utils import negative_sampling
 
 from tqdm import tqdm
-from node_label import spmdiff_
+from node_label import spmdiff_, QUERY_GRAPH_LABEL
 from logger import Logger
 
 
@@ -30,7 +30,7 @@ def get_train_test(args):
 
 
 def train_hits(encoder, predictor, data, optimizer, batch_size, 
-        mask_target):
+        mask_target, k_shots=0):
     encoder.train()
     predictor.train()
     device = data.adj_t.device()
@@ -44,10 +44,13 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(1)), batch_size,
                            shuffle=True),desc='Train'):
-        edge = pos_train_edge[:,perm]
+        edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, "train", "pos")
+        neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, "train", "neg")
+        train_edges = torch.cat((edge, neg_edge), dim=-1)
+        train_label = torch.cat((torch.ones(perm.size()[0]), torch.zeros(perm.size()[0])), dim=0).to(device)
         if mask_target:
             adj_t = data.adj_t
-            undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
+            undirected_edges = torch.cat((train_edges, train_edges.flip(0)), dim=-1)
             target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
             adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
         else:
@@ -55,11 +58,9 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
 
 
         h = encoder(data.x, adj_t)
-
-        neg_edge = neg_edge_epoch[:,perm]
-        train_edges = torch.cat((edge, neg_edge), dim=-1)
-        train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
-        out = predictor(h, adj_t, train_edges).squeeze()
+        edge_query_idx = torch.cat((edge_query_idx, neg_edge_query_idx), dim=0)
+        edge_support_labels = torch.cat((edge_support_labels, neg_edge_support_labels), dim=0)
+        out = predictor(h, adj_t, train_edges, edge_query_idx, edge_support_labels).squeeze()
         loss = criterion(out, train_label)
 
         loss.backward()
@@ -78,7 +79,7 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
 
 @torch.no_grad()
 def test_hits(encoder, predictor, data, evaluator, 
-         batch_size, use_valedges_as_input, fast_inference, inference_datasets):
+         batch_size, use_valedges_as_input, fast_inference, inference_datasets, k_shots=0):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
@@ -91,15 +92,15 @@ def test_hits(encoder, predictor, data, evaluator,
 
         pos_test_preds = []
         for perm in DataLoader(range(pos_test_edge.size(1)), batch_size):
-            edge = pos_test_edge[:,perm]
-            out = predictor(h, adj_t, edge, cache_mode=cache_mode)
+            edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, split, "pos")
+            out = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
             pos_test_preds += [out.squeeze().cpu()]
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
         neg_test_preds = []
         for perm in DataLoader(range(neg_test_edge.size(1)), batch_size):
-            edge = neg_test_edge[:,perm]
-            neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode).squeeze().cpu()]
+            neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, split, "neg")
+            neg_test_preds += [predictor(h, adj_t, neg_edge, neg_edge_query_idx, neg_edge_support_labels).squeeze().cpu()]
         neg_test_pred = torch.cat(neg_test_preds, dim=0)
         return pos_test_pred, neg_test_pred
 
@@ -297,3 +298,61 @@ def test_mrr(encoder, predictor, data, split_edge, evaluator,
     # results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
 
     return results
+
+
+def build_QK_graph(perm, data, k_shots, split, label):
+    slice_dict = data._slice_dict
+    other_label = 'pos' if label == 'neg' else 'neg'
+    splits = slice_dict[f"train_{label}_edge_index"][1:] - slice_dict[f"train_{label}_edge_index"][:-1]
+    all_edges = getattr(data, f"train_{label}_edge_index")
+    other_edges = getattr(data, f"train_{other_label}_edge_index")
+
+    if split == "train":
+        query_edges = all_edges[:,perm]
+    else:
+        query_edges = getattr(data, f"{split}_{label}_edge_index")[:,perm]
+    all_mask = torch.ones_like(all_edges[0], dtype=torch.bool)
+    if split == "train": # only remove the overlap edges during training
+        all_mask[perm] = False
+    edges_by_dataset = torch.split(all_edges,splits.tolist(),1)
+    other_edges_by_dataset = torch.split(other_edges,splits.tolist(),1)
+    masks_by_dataset = torch.split(all_mask,splits.tolist(),0)
+
+    dataset_ids = torch.bucketize(perm, slice_dict[f"{split}_{label}_edge_index"], right=True) - 1
+    unique_dataset_ids, inverse_indices, count = torch.unique(dataset_ids, return_inverse=True, return_counts=True)
+
+    # in each dataset, we sample count*k_shots edges with replacement
+    # the edges to be sampled are the ones not in the query set
+    support_edges = []
+    query_idx = []
+    support_labels = []
+    for i, one_dataset_id in enumerate(unique_dataset_ids):
+        edges_to_sample = edges_by_dataset[one_dataset_id][:,masks_by_dataset[one_dataset_id]] # remove the edges in query set
+        other_edges_to_sample = other_edges_by_dataset[one_dataset_id]
+
+        assert edges_to_sample.size(1) >= k_shots, 'Less than k_shots edges to be support edges'
+        random_indices = torch.randint(0, edges_to_sample.size(1), (count[i]*k_shots,))
+        edges_sampled = edges_to_sample[:,random_indices]
+        random_indices = torch.randint(0, other_edges_to_sample.size(1), (count[i]*k_shots,))
+        other_edges_sampled = other_edges_to_sample[:,random_indices]
+
+
+        support_edges.append(edges_sampled)
+        support_edges.append(other_edges_sampled)
+
+        query_idx1 = torch.where(dataset_ids == one_dataset_id)[0]
+        query_idx1 = torch.repeat_interleave(query_idx1, k_shots).repeat(2)
+
+        query_idx.append(query_idx1)
+        support_labels.append(torch.ones_like(edges_sampled[0]))
+        support_labels.append(torch.zeros_like(other_edges_sampled[0]))
+    support_edges = torch.cat(support_edges, dim=1)
+    query_idx = torch.cat(query_idx, dim=0).to(query_edges.device)
+    support_labels = torch.cat(support_labels, dim=0)
+    # prepend QUERY_GRAPH_LABEL to support_labels to indicate that they are not support edges
+    support_labels = torch.cat((torch.ones_like(query_edges[0]).fill_(QUERY_GRAPH_LABEL), support_labels), dim=0)
+
+    edges = torch.cat((query_edges, support_edges), dim=1)
+    # assign the query_idx of query edges to its own index
+    query_idx = torch.cat([torch.arange(query_edges.size(1), device=query_edges.device), query_idx], dim=0)
+    return edges, query_idx, support_labels

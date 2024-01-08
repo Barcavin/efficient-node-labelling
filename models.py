@@ -10,9 +10,8 @@ from torch_sparse.matmul import spmm_max, spmm_mean, spmm_add
 
 from functools import partial
 
-from node_label import de_plus_finder, NodeLabel
+from node_label import de_plus_finder, NodeLabel, QUERY_GRAPH_LABEL
 from typing import Iterable, Final
-
 
 class MLP(nn.Module):
     def __init__(
@@ -251,7 +250,8 @@ class MPLP(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_layers,
                  feat_dropout, label_dropout, num_hops=2, prop_type='combine', signature_sampling='torchhd', use_degree='none',
                  signature_dim=1024, minimum_degree_onehot=-1, batchnorm_affine=True,
-                 feature_combine="hadamard",adj2=False):
+                 feature_combine="hadamard",adj2=False, add_self_loops=False, foundation_mode=True, heads=4,
+                 use_graph_embedding=False):
         super(MPLP, self).__init__()
 
         self.in_channels = in_channels
@@ -263,6 +263,7 @@ class MPLP(torch.nn.Module):
         self.use_degree = use_degree
         self.feature_combine = feature_combine
         self.adj2 = adj2
+        self.foundation_mode = foundation_mode
         if self.use_degree == 'mlp':
             self.node_weight_encode = MLP(2, in_channels + 1, 32, 1, feat_dropout, norm_type="batch", affine=batchnorm_affine)
         if self.prop_type in ['prop_only', 'precompute']:
@@ -282,15 +283,20 @@ class MPLP(torch.nn.Module):
             elif feature_combine == "plus_minus":
                 feat_encode_input_dim = in_channels * 2
             self.feat_encode = MLP(2, feat_encode_input_dim, in_channels, in_channels, self.feat_dropout, "batch", tailnormactdrop=True, affine=batchnorm_affine)
-        self.classifier = nn.Linear(dense_dim, 1)
-
+        
+        if self.foundation_mode:
+            self.gat = SupportAttention(dense_dim, hidden_channels, add_self_loops, 
+                                        heads=heads, use_graph_embedding=use_graph_embedding)
+            self.classifier = MLP(2, hidden_channels, hidden_channels, 1, self.feat_dropout, norm_type="batch", affine=batchnorm_affine)
+        else:
+            self.classifier = nn.Linear(dense_dim, 1)
 
     def reset_parameters(self):
         for m in self.modules():
             if isinstance(m, nn.Linear) or isinstance(m, nn.BatchNorm1d):
                 m.reset_parameters()
     
-    def forward(self, x, adj, edges, cache_mode=None, adj2=None):
+    def forward(self, x, adj, edges, edge_query_idx, edge_support_labels, cache_mode=None, adj2=None):
         """
         Args:
             x: [N, in_channels] node embedding after GNN
@@ -342,6 +348,13 @@ class MPLP(torch.nn.Module):
             x = torch.cat([x_ij, out], dim=1)
         else:
             x = out
+        
+        if self.foundation_mode:
+            # Support graph to interact with query graph
+            x, alpha, data_graph_edge_index = self.gat(x, edge_query_idx, edge_support_labels)
+            # for the p-th sample, the attention is alpha[data_graph_edge_index[1]==p-th,head_num]
+        else:
+            x = x[edge_support_labels==QUERY_GRAPH_LABEL]
         logit = self.classifier(x)
         return logit
 
@@ -350,7 +363,90 @@ class MPLP(torch.nn.Module):
         return self
 
 
+class SupportAttention(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, add_self_loops=False, heads=4, use_graph_embedding=False):
+        super(SupportAttention, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.T_embedding = nn.Embedding(QUERY_GRAPH_LABEL+1, out_channels) # 0 --> neg, 1 --> pos, QUERY_GRAPH_LABEL --> query
+        self.add_self_loops = add_self_loops
+        self.gat = AttentionLayer(in_channels=in_channels, out_channels=out_channels, 
+                                  heads=heads, concat=False, add_self_loops=False,
+                                  use_graph_embedding=use_graph_embedding)
 
+    def reset_parameters(self):
+        self.gat.reset_parameters()
+
+    def forward(self, x, edge_query_idx, edge_support_labels):
+        query_mask = (edge_support_labels==QUERY_GRAPH_LABEL)
+        query_graph_x = x[query_mask]
+        support_graph_xs = x[~query_mask]
+        support_graph_ys = edge_support_labels[~query_mask]
+        support_graph_batch = edge_query_idx[~query_mask]
+
+        # query_graph_x += self.T_embedding.weight[2]
+        # support_graph_xs += self.T_embedding(support_graph_ys)
+
+        data_graph_x = torch.concat([query_graph_x, support_graph_xs], dim=0)
+        row = torch.arange(start=query_graph_x.size(0), end=data_graph_x.size(0)).to(query_graph_x.device)
+        col = support_graph_batch
+        data_graph_edge_index = torch.stack([row, col], dim=0) # no need to to_undirected()
+
+        # T_embedding
+        query_T_embedding = self.T_embedding.weight[QUERY_GRAPH_LABEL].view(1,-1).expand(query_graph_x.size(0),-1)
+        support_T_embedding = self.T_embedding(support_graph_ys)
+        T_embedding = torch.cat([query_T_embedding, support_T_embedding], dim=0)
+
+        if self.add_self_loops:
+            query_graph_ids = torch.arange(start=0, end=query_mask.sum()).to(query_graph_x.device)
+            self_loops_query_graph = torch.stack([query_graph_ids, query_graph_ids], dim=0)
+            data_graph_edge_index = torch.cat([data_graph_edge_index, self_loops_query_graph], dim=1)
+        x, (_,alpha) = self.gat(data_graph_x, data_graph_edge_index, T_embedding, return_attention_weights=True)
+        query_x = x[:query_graph_x.size(0)]
+        return query_x, alpha, data_graph_edge_index
+
+
+from typing import Any, Callable, Optional, Tuple, Union
+
+from torch_geometric.typing import (
+    Adj,
+    OptPairTensor,
+    OptTensor,
+    SparseTensor,
+    torch_sparse,
+)
+
+# Adopted from PyG library (https://github.com/pyg-team/pytorch_geometric/blob/master/torch_geometric/utils/dropout.py)
+from torch import Tensor
+from torch_geometric.typing import (Adj, OptPairTensor, OptTensor, PairTensor,
+                                    Size)
+from torch_geometric.nn import GATv2Conv
+from torch_geometric.utils import softmax
+
+class AttentionLayer(GATv2Conv):
+    def __init__(self, **kwargs):
+        self.use_graph_embedding = kwargs.pop('use_graph_embedding', False)
+        super(AttentionLayer, self).__init__(**kwargs)
+    
+    def message(self, x_j: Tensor, x_i: Tensor, edge_attr: OptTensor,
+                index: Tensor, ptr: OptTensor,
+                size_i: Optional[int], edge_index_j) -> Tensor:
+        x = x_i + x_j
+        x = F.leaky_relu(x, self.negative_slope)
+        alpha = (x * self.att).sum(dim=-1)
+        alpha = softmax(alpha, index, ptr, size_i)
+        self._alpha = alpha
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+
+        num_edges, num_heads, hidden_channels = x_j.shape
+        num_edges, hidden_channels_edge_attr = edge_attr.shape
+        edge_attr = edge_attr.view(size_i,1,hidden_channels_edge_attr).expand(size_i,num_heads,hidden_channels_edge_attr)
+        edge_attr =  edge_attr.index_select(self.node_dim, edge_index_j)
+        if self.use_graph_embedding:
+            out = x_j + edge_attr
+        else:
+            out = edge_attr
+        return out * alpha.unsqueeze(-1)
 
 
 def get_node_ids(l:SparseTensor):

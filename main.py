@@ -60,7 +60,6 @@ def main():
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
 
     # training setting
-    parser.add_argument('--train_samples', type=int, default=None, help='number of training samples per pretrain dataset')
     parser.add_argument('--batch_size', type=int, default=64 * 1024)
     parser.add_argument('--test_batch_size', type=int, default=100000)
     parser.add_argument('--epochs', type=int, default=20000)
@@ -74,6 +73,15 @@ def main():
     parser.add_argument('--metric', type=str, default='Hits@50#', help='main evaluation metric')
     parser.add_argument('--save_model', type=str, default=None, help='the directory to save model')
     parser.add_argument('--load_model', type=str, default=None, help='the directory to load model')
+
+    # in-context setting
+    parser.add_argument('--train_samples', type=int, default=None, help='number of training samples per pretrain dataset')
+    parser.add_argument('--k_shots', type=int, default=0, help='number of pos/neg support edges per sample')
+    parser.add_argument('--foundation_mode', type=str2bool, default=False, help='whether to use in-context training')
+    parser.add_argument('--heads', type=int, default=4, help='number of heads in MPLP')
+    parser.add_argument('--add_self_loops', type=str2bool, default=True, help='whether to add self loops in MPLP')
+    parser.add_argument('--use_graph_embedding', type=str2bool, default=True, help='whether to use subgraph embedding')
+
 
     # misc
     parser.add_argument('--log_dir', type=str, default='./logs')
@@ -160,7 +168,7 @@ def main():
                         prop_type=prop_type, signature_sampling=args.signature_sampling,
                         use_degree=args.use_degree, signature_dim=args.signature_dim,
                         minimum_degree_onehot=args.minimum_degree_onehot, batchnorm_affine=args.batchnorm_affine,
-                        feature_combine=args.feature_combine, adj2=args.adj2)
+                        feature_combine=args.feature_combine, adj2=args.adj2, add_self_loops=args.add_self_loops, foundation_mode=args.foundation_mode, heads=args.heads, use_graph_embedding=args.use_graph_embedding)
         if prop_type == "precompute":
             assert args.use_degree != "mlp"
             predictor.precompute(train_data.adj_t)
@@ -182,10 +190,10 @@ def main():
             # no need to train
             break
         loss = train(encoder, predictor, train_data,
-                        optimizer, args.batch_size, args.mask_target)
+                        optimizer, args.batch_size, args.mask_target, args.k_shots)
 
         results = test(encoder, predictor, test_data,
-                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#")
+                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#", args.k_shots)
 
         if results[args.metric][0] >= best_val:
             best_val = results[args.metric][0]
@@ -234,7 +242,7 @@ def main():
     for run in range(args.runs):
         test_data = get_inference_data(args.dataset_dir, args.inference_datasets, run).to(device)
         results = test(encoder, predictor, test_data,
-                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, args.inference_datasets)
+                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, args.inference_datasets, args.k_shots)
         for key, result in results.items():
             loggers[key].add_result(run, result)
         for key in loggers.keys():

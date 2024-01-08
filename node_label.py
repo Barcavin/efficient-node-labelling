@@ -18,6 +18,7 @@ from torch_geometric.utils import k_hop_subgraph as pyg_k_hop_subgraph, to_edge_
 import torchhd
 
 MINIMUM_SIGNATURE_DIM=64
+QUERY_GRAPH_LABEL=2
 
 class NodeLabel(torch.nn.Module):
     def __init__(self, dim: int=1024, signature_sampling="torchhd", prop_type="prop_only",

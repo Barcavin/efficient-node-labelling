@@ -80,6 +80,12 @@ def get_inference_data(root, inference_datasets, run):
     inference_data = []
     for name in inference_datasets:
         data, split_edge = get_data_split(root, name, 0.1, 0.2, run)
+        data.train_pos_edge_index = split_edge['train']['edge'].t()
+        # negative sampling
+        neg_edge_index = negative_sampling(
+            edge_index=data.edge_index, num_nodes=data.num_nodes,
+            num_neg_samples=data.train_pos_edge_index.size(1))
+        data.train_neg_edge_index = neg_edge_index
         data.val_pos_edge_index = split_edge['valid']['edge'].t()
         data.val_neg_edge_index = split_edge['valid']['edge_neg'].t()
         data.test_pos_edge_index = split_edge['test']['edge'].t()
