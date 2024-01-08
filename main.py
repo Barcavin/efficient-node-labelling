@@ -9,14 +9,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_geometric.transforms as T
-from torch_geometric.utils import degree, to_undirected
 from torch_sparse import SparseTensor
-from tqdm import tqdm
 
 from train_utils import get_train_test
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
-from node_label import spmdiff_, get_two_hop_adj
-from utils import ( get_dataset, data_summary,
+from node_label import get_two_hop_adj
+from utils import ( get_dataset, data_summary, get_git_revision_short_hash,
                    set_random_seeds, str2bool, get_data_split, initial_embedding)
 
 MPLP_dict={
@@ -99,16 +97,19 @@ def main():
         data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
     else:
         print(args)
-    final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"
-    final_log_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(final_log_path, 'w') as f:
-        print(args, file=f)
     
+    final_log_path = Path(args.log_dir) / f"{args.dataset}_jobID_{os.getenv('JOB_ID','None')}_PID_{os.getpid()}_{int(time.time())}.log"    
     # Save command line input.
     cmd_input = 'python ' + ' '.join(sys.argv) + '\n'
     print('Command line input: ' + cmd_input + ' is saved.')
-    with open(final_log_path, 'a') as f:
+    # Save git revision.
+    git_hash = get_git_revision_short_hash()
+    final_log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(final_log_path, 'w') as f:
+        print(args, file=f)
         f.write('\n' + cmd_input)
+        print(f"HOSTNAME: {os.getenv('HOSTNAME','None')}", file=f)
+        print('Git revision: ' + git_hash + '\n', file=f)
     
     train, test, evaluator, loggers = get_train_test(args)
 
