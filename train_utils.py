@@ -344,8 +344,12 @@ def build_QK_graph(perm, data, k_shots, split, label):
         query_idx1 = torch.repeat_interleave(query_idx1, k_shots).repeat(2)
 
         query_idx.append(query_idx1)
-        support_labels.append(torch.ones_like(edges_sampled[0]))
-        support_labels.append(torch.zeros_like(other_edges_sampled[0]))
+        if label == 'pos':
+            support_labels.append(torch.ones_like(edges_sampled[0]))
+            support_labels.append(torch.zeros_like(other_edges_sampled[0]))
+        else:
+            support_labels.append(torch.zeros_like(edges_sampled[0]))
+            support_labels.append(torch.ones_like(other_edges_sampled[0]))
     support_edges = torch.cat(support_edges, dim=1)
     query_idx = torch.cat(query_idx, dim=0).to(query_edges.device)
     support_labels = torch.cat(support_labels, dim=0)
