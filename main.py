@@ -77,6 +77,7 @@ def main():
     # in-context setting
     parser.add_argument('--train_samples', type=int, default=None, help='number of training samples per pretrain dataset')
     parser.add_argument('--k_shots', type=int, default=0, help='number of pos/neg support edges per sample')
+    parser.add_argument('--test_k_shots', type=int, default=None, help='number of pos/neg support edges per sample')
     parser.add_argument('--foundation_mode', type=str2bool, default=False, help='whether to use in-context training')
     parser.add_argument('--heads', type=int, default=4, help='number of heads in MPLP')
     parser.add_argument('--add_self_loops', type=str2bool, default=True, help='whether to add self loops in MPLP')
@@ -92,6 +93,9 @@ def main():
     # start time
     start_time = time.time()
     set_random_seeds(234)
+
+    if args.test_k_shots is None:
+        args.test_k_shots = args.k_shots
 
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -193,7 +197,7 @@ def main():
                         optimizer, args.batch_size, args.mask_target, args.k_shots)
 
         results = test(encoder, predictor, test_data,
-                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#", args.k_shots)
+                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#", args.test_k_shots)
 
         if results[args.metric][0] >= best_val:
             best_val = results[args.metric][0]
