@@ -16,7 +16,10 @@ from torch_geometric.utils import (add_self_loops, degree,
                                    from_scipy_sparse_matrix, index_to_mask,
                                    is_undirected, negative_sampling,
                                    to_undirected, train_test_split_edges, coalesce)
-from torch_sparse import SparseTensor                         
+from torch_sparse import SparseTensor    
+from snap_dataset import SNAPDataset
+from custom_dataset import SyntheticDataset
+from torch_geometric.data.collate import collate
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
