@@ -246,7 +246,7 @@ def main():
     for run in range(args.runs):
         test_data = get_inference_data(args.dataset_dir, args.inference_datasets, run).to(device)
         results = test(encoder, predictor, test_data,
-                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, args.inference_datasets, args.k_shots)
+                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, args.inference_datasets, args.test_k_shots)
         for key, result in results.items():
             loggers[key].add_result(run, result)
         for key in loggers.keys():
