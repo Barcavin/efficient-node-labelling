@@ -363,7 +363,7 @@ def get_git_revision_short_hash() -> str:
 
 MODEL_ARGS = ["hidden_channels","num_layers", "feat_dropout", "label_dropout", "num_hops", 
               "signature_sampling","use_degree", "signature_dim","minimum_degree_onehot","batchnorm_affine","feature_combine","adj2", "xdp", "use_feature", "jk", "encoder",
-              "predictor"]
+              "predictor", "add_self_loops", "foundation_mode", "heads", "use_graph_embedding"]
 
 def save_model(state_dict, dir, appendix, cmd, git_hash, hostname, args):
     checkpoints = Path(dir)
@@ -373,7 +373,7 @@ def save_model(state_dict, dir, appendix, cmd, git_hash, hostname, args):
     # dump model args
     args_dict = {}
     for arg in MODEL_ARGS:
-        args_dict[arg] = args.__dict__[arg]
+        args_dict[arg] = args.__dict__.get(arg, None)
     state_dict['args'] = args_dict
     torch.save(state_dict, model_folder / "model.pt")
     print(f"save model to {model_folder / 'model.pt'}")
