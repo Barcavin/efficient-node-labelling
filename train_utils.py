@@ -91,14 +91,14 @@ def test_hits(encoder, predictor, data, evaluator,
         neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
         pos_test_preds = []
-        for perm in DataLoader(range(pos_test_edge.size(1)), batch_size):
+        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)), batch_size),desc=f"{split}:pos"):
             edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, split, "pos")
             out = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
             pos_test_preds += [out.squeeze().cpu()]
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
         neg_test_preds = []
-        for perm in DataLoader(range(neg_test_edge.size(1)), batch_size):
+        for perm in tqdm(DataLoader(range(neg_test_edge.size(1)), batch_size),desc=f"{split}:neg"):
             neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, split, "neg")
             neg_test_preds += [predictor(h, adj_t, neg_edge, neg_edge_query_idx, neg_edge_support_labels).squeeze().cpu()]
         neg_test_pred = torch.cat(neg_test_preds, dim=0)

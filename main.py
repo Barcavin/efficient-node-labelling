@@ -60,8 +60,8 @@ def main():
     parser.add_argument('--batchnorm_affine', type=str2bool, default='True', help='whether to use Affine in BatchNorm')
 
     # training setting
-    parser.add_argument('--batch_size', type=int, default=64 * 1024)
-    parser.add_argument('--test_batch_size', type=int, default=100000)
+    parser.add_argument('--batch_size', type=int, default=1024)
+    parser.add_argument('--test_batch_size', type=int, default=1024)
     parser.add_argument('--epochs', type=int, default=20000)
     parser.add_argument('--num_neg', type=int, default=1)
     parser.add_argument('--num_hops', type=int, default=2)
