@@ -66,12 +66,7 @@ def get_pretrain_data(root, pretrain_datasets, train_samples=None):
         data = clean_Data_attr(data)
         pretrain_data.append(data)
     # merge pretrain data
-    data, slice_dict, inc_dict = collate(Data, pretrain_data)
-    data = ToSparseTensor()(data)
-    data._slice_dict = slice_dict
-    data._inc_dict = inc_dict
-    data._num_graphs = len(pretrain_data)
-    data.num_nodes = sum([d.num_nodes for d in pretrain_data])
+    data = merge_data(pretrain_data)
     return data
 
 
@@ -93,12 +88,18 @@ def get_inference_data(root, inference_datasets, run):
         data = clean_Data_attr(data)
         inference_data.append(data)
     # merge pretrain data
-    data, slice_dict, inc_dict = collate(Data, inference_data)
+    data = merge_data(inference_data)
+    return data
+    
+
+def merge_data(data_list):
+    # merge pretrain data
+    data, slice_dict, inc_dict = collate(Data, data_list)
     data = ToSparseTensor()(data)
     data._slice_dict = slice_dict
     data._inc_dict = inc_dict
-    data._num_graphs = len(inference_data)
-    data.num_nodes = sum([d.num_nodes for d in inference_data])
+    data._num_graphs = len(data_list)
+    data.num_nodes = sum([d.num_nodes for d in data_list])
     return data
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):

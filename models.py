@@ -378,33 +378,40 @@ class SupportAttention(torch.nn.Module):
         self.gat.reset_parameters()
 
     def forward(self, x, edge_query_idx, edge_support_labels):
-        query_mask = (edge_support_labels==QUERY_GRAPH_LABEL)
-        query_graph_x = x[query_mask]
-        support_graph_xs = x[~query_mask]
-        support_graph_ys = edge_support_labels[~query_mask]
-        support_graph_batch = edge_query_idx[~query_mask]
-
-        # query_graph_x += self.T_embedding.weight[2]
-        # support_graph_xs += self.T_embedding(support_graph_ys)
-
-        data_graph_x = torch.concat([query_graph_x, support_graph_xs], dim=0)
-        row = torch.arange(start=query_graph_x.size(0), end=data_graph_x.size(0)).to(query_graph_x.device)
-        col = support_graph_batch
-        data_graph_edge_index = torch.stack([row, col], dim=0) # no need to to_undirected()
-
-        # T_embedding
-        query_T_embedding = self.T_embedding.weight[QUERY_GRAPH_LABEL].view(1,-1).expand(query_graph_x.size(0),-1)
-        support_T_embedding = self.T_embedding(support_graph_ys)
-        T_embedding = torch.cat([query_T_embedding, support_T_embedding], dim=0)
-
-        if self.add_self_loops:
-            query_graph_ids = torch.arange(start=0, end=query_mask.sum()).to(query_graph_x.device)
-            self_loops_query_graph = torch.stack([query_graph_ids, query_graph_ids], dim=0)
-            data_graph_edge_index = torch.cat([data_graph_edge_index, self_loops_query_graph], dim=1)
+        data_graph_x, data_graph_edge_index, T_embedding, query_graph_mask = build_QK_edge_index(
+                x, edge_query_idx, edge_support_labels, self.T_embedding, self.add_self_loops)
         x, (_,alpha) = self.gat(data_graph_x, data_graph_edge_index, T_embedding, return_attention_weights=True)
-        query_x = x[:query_graph_x.size(0)]
+        query_x = x[query_graph_mask]
         return query_x, alpha, data_graph_edge_index
 
+
+def build_QK_edge_index(x, edge_query_idx, edge_support_labels, T_embedding, add_self_loops):
+    query_mask = (edge_support_labels==QUERY_GRAPH_LABEL)
+    query_graph_x = x[query_mask]
+    support_graph_xs = x[~query_mask]
+    support_graph_ys = edge_support_labels[~query_mask]
+    support_graph_batch = edge_query_idx[~query_mask]
+
+    # query_graph_x += self.T_embedding.weight[2]
+    # support_graph_xs += self.T_embedding(support_graph_ys)
+
+    data_graph_x = torch.concat([query_graph_x, support_graph_xs], dim=0)
+    row = torch.arange(start=query_graph_x.size(0), end=data_graph_x.size(0)).to(query_graph_x.device)
+    col = support_graph_batch
+    data_graph_edge_index = torch.stack([row, col], dim=0) # no need to to_undirected()
+
+    # T_embedding
+    query_T_embedding = T_embedding.weight[QUERY_GRAPH_LABEL].view(1,-1).expand(query_graph_x.size(0),-1)
+    support_T_embedding = T_embedding(support_graph_ys)
+    T_embedding = torch.cat([query_T_embedding, support_T_embedding], dim=0)
+
+    if add_self_loops:
+        query_graph_ids = torch.arange(start=0, end=query_mask.sum()).to(query_graph_x.device)
+        self_loops_query_graph = torch.stack([query_graph_ids, query_graph_ids], dim=0)
+        data_graph_edge_index = torch.cat([data_graph_edge_index, self_loops_query_graph], dim=1)
+    query_graph_mask = torch.zeros_like(data_graph_x[:,0], dtype=torch.bool)
+    query_graph_mask[:query_graph_x.size(0)] = True
+    return data_graph_x, data_graph_edge_index, T_embedding, query_graph_mask
 
 from typing import Any, Callable, Optional, Tuple, Union
 

@@ -1,5 +1,6 @@
 import time
 import torch
+import torch.nn as nn
 from torch.nn import BCEWithLogitsLoss
 from torch.utils.data import DataLoader
 from torch_sparse import SparseTensor
@@ -40,6 +41,7 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
     optimizer.zero_grad()
     total_loss = total_examples = 0
     neg_edge_epoch = data.train_neg_edge_index
+    assert pos_train_edge.size(1) == neg_edge_epoch.size(1), 'Pos and neg edge index size mismatch'
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(1)), batch_size,
@@ -307,13 +309,13 @@ def build_QK_graph(perm, data, k_shots, split, label):
     all_edges = getattr(data, f"train_{label}_edge_index")
     other_edges = getattr(data, f"train_{other_label}_edge_index")
 
+    all_mask = torch.ones_like(all_edges[0], dtype=torch.bool)
     if split == "train":
         query_edges = all_edges[:,perm]
+        # only remove the overlap edges during training
+        all_mask[perm] = False
     else:
         query_edges = getattr(data, f"{split}_{label}_edge_index")[:,perm]
-    all_mask = torch.ones_like(all_edges[0], dtype=torch.bool)
-    if split == "train": # only remove the overlap edges during training
-        all_mask[perm] = False
     edges_by_dataset = torch.split(all_edges,splits.tolist(),1)
     other_edges_by_dataset = torch.split(other_edges,splits.tolist(),1)
     masks_by_dataset = torch.split(all_mask,splits.tolist(),0)
@@ -360,3 +362,88 @@ def build_QK_graph(perm, data, k_shots, split, label):
     # assign the query_idx of query edges to its own index
     query_idx = torch.cat([torch.arange(query_edges.size(1), device=query_edges.device), query_idx], dim=0)
     return edges, query_idx, support_labels
+
+
+if __name__ == '__main__':
+    from utils import merge_data
+    from torch_geometric.data import Data
+
+    data1 = Data(edge_index=torch.randint(0, 100, (2, 20)), num_nodes=100)
+    data1.train_pos_edge_index = torch.LongTensor([[4,5,6],[1,2,3]])
+    data1.train_neg_edge_index = torch.LongTensor([[7,8,9],[10,11,12]])
+    data1.val_pos_edge_index = torch.LongTensor([[13,14,15],[16,17,18]])
+    data1.val_neg_edge_index = torch.LongTensor([[22,23,24],[19,20,21]])
+    data1.test_pos_edge_index = torch.LongTensor([[25,26,27],[28,29,30]])
+    data1.test_neg_edge_index = torch.LongTensor([[31,32,33],[34,35,36]])
+
+    data2 = Data(edge_index=torch.randint(0, 100, (2, 20)), num_nodes=100)
+    data2.train_pos_edge_index = torch.LongTensor([[36,35,34],[33,32,31]])
+    data2.train_neg_edge_index = torch.LongTensor([[30,29,28],[27,26,25]])
+    data2.val_pos_edge_index = torch.LongTensor([[24,23,22],[21,20,19]])
+    data2.val_neg_edge_index = torch.LongTensor([[18,17,16],[15,14,13]])
+    data2.test_pos_edge_index = torch.LongTensor([[12,11,10],[9,8,7]])
+    data2.test_neg_edge_index = torch.LongTensor([[6,5,4],[3,2,1]])
+
+    data = merge_data([data1, data2])
+
+    # split= 'train' label = 'pos'
+    perm = torch.LongTensor([5, 1])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "train", "pos")
+    perm = torch.LongTensor([0, 1])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "train", "pos")
+    
+
+    # split= 'train' label = 'neg'
+    perm = torch.LongTensor([4, 2])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "train", "neg")
+    perm = torch.LongTensor([1, 2])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "train", "neg")
+
+    # split= 'val' label = 'pos'
+    perm = torch.LongTensor([3, 0])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "val", "pos")
+    perm = torch.LongTensor([3, 4])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "val", "pos")
+
+    # split= 'val' label = 'neg'
+    perm = torch.LongTensor([3, 0])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "val", "neg")
+    perm = torch.LongTensor([4, 5])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "val", "neg")
+
+    # split= 'test' label = 'pos'
+    perm = torch.LongTensor([1, 4])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "pos")
+    perm = torch.LongTensor([4, 5])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "pos")
+
+    # split= 'test' label = 'neg'
+    perm = torch.LongTensor([1, 4])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "neg")
+    perm = torch.LongTensor([0, 2])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "neg")
+
+
+    # test build_QK_edge_index
+    from models import build_QK_edge_index, AttentionLayer
+    in_channels = 1
+    out_channels = 4
+    gat = AttentionLayer(in_channels=in_channels, out_channels=out_channels, 
+                                  heads=4, concat=False, add_self_loops=False,
+                                  use_graph_embedding=True)
+
+    
+    embedding = nn.Embedding(QUERY_GRAPH_LABEL+1, out_channels)
+    perm = torch.LongTensor([1, 4])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "neg")
+    x = torch.arange(query_idx.size(0)).view(-1,1).float() # in_channels = 1
+    data_graph_x, data_graph_edge_index, T_embedding, query_graph_mask = build_QK_edge_index(
+                x, query_idx, support_labels, embedding, True)
+    
+    perm = torch.LongTensor([4, 5])
+    edges, query_idx, support_labels = build_QK_graph(perm, data, 1, "test", "pos")
+    x = torch.arange(query_idx.size(0)).view(-1,1).float()
+    data_graph_x, data_graph_edge_index, T_embedding, query_graph_mask = build_QK_edge_index(
+                x, query_idx, support_labels, embedding, False)
+
+    x_new, (_,alpha) = gat(data_graph_x, data_graph_edge_index, T_embedding, return_attention_weights=True)
