@@ -48,6 +48,7 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
                            shuffle=True),desc='Train'):
         edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, "train", "pos")
         neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, "train", "neg")
+        neg_edge_query_idx  = neg_edge_query_idx + perm.size(0)
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(perm.size()[0]), torch.zeros(perm.size()[0])), dim=0).to(device)
         if mask_target:
@@ -303,6 +304,8 @@ def test_mrr(encoder, predictor, data, split_edge, evaluator,
 
 
 def build_QK_graph(perm, data, k_shots, split, label):
+    assert split in ['train', 'val', 'test']
+    assert label in ['pos', 'neg']
     slice_dict = data._slice_dict
     other_label = 'pos' if label == 'neg' else 'neg'
     splits = slice_dict[f"train_{label}_edge_index"][1:] - slice_dict[f"train_{label}_edge_index"][:-1]

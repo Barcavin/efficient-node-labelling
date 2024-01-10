@@ -387,7 +387,8 @@ class SupportAttention(torch.nn.Module):
 
 def build_QK_edge_index(x, edge_query_idx, edge_support_labels, T_embedding, add_self_loops):
     query_mask = (edge_support_labels==QUERY_GRAPH_LABEL)
-    query_graph_x = x[query_mask]
+    # sort the query graph nodes by the batch index
+    query_graph_x = x[query_mask][edge_query_idx[query_mask].argsort()]
     support_graph_xs = x[~query_mask]
     support_graph_ys = edge_support_labels[~query_mask]
     support_graph_batch = edge_query_idx[~query_mask]
