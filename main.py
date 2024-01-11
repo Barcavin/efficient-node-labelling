@@ -197,7 +197,7 @@ def main():
                         optimizer, args.batch_size, args.mask_target, args.k_shots)
 
         results = test(encoder, predictor, test_data,
-                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#", args.test_k_shots)
+                        evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, "#", args.mask_target, args.test_k_shots)
 
         if results[args.metric][0] >= best_val:
             best_val = results[args.metric][0]

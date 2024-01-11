@@ -82,12 +82,14 @@ def train_hits(encoder, predictor, data, optimizer, batch_size,
 
 @torch.no_grad()
 def test_hits(encoder, predictor, data, evaluator, 
-         batch_size, use_valedges_as_input, fast_inference, inference_datasets, k_shots=0):
+         batch_size, use_valedges_as_input, fast_inference, inference_datasets, mask_target, k_shots=0):
     encoder.eval()
     predictor.eval()
     device = data.adj_t.device()
     adj_t = data.adj_t
-    h = encoder(data.x, adj_t)
+    encoding_per_batch = mask_target and (k_shots>0) # mask target only when k_shots>0, when there is positive edges used as support
+    if not encoding_per_batch:
+        h = encoder(data.x, adj_t)
 
     def test_split(split, cache_mode=None):
         pos_test_edge = getattr(data, f"{split}_pos_edge_index")
@@ -96,6 +98,12 @@ def test_hits(encoder, predictor, data, evaluator,
         pos_test_preds = []
         for perm in tqdm(DataLoader(range(pos_test_edge.size(1)), batch_size),desc=f"{split}:pos"):
             edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, split, "pos")
+            if encoding_per_batch:
+                adj_t = data.adj_t
+                undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
+                target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
+                adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
+                h = encoder(data.x, adj_t)
             out = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
             pos_test_preds += [out.squeeze().cpu()]
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
@@ -103,6 +111,12 @@ def test_hits(encoder, predictor, data, evaluator,
         neg_test_preds = []
         for perm in tqdm(DataLoader(range(neg_test_edge.size(1)), batch_size),desc=f"{split}:neg"):
             neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, split, "neg")
+            if encoding_per_batch:
+                adj_t = data.adj_t
+                undirected_edges = torch.cat((neg_edge, neg_edge.flip(0)), dim=-1)
+                target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
+                adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
+                h = encoder(data.x, adj_t)
             neg_test_preds += [predictor(h, adj_t, neg_edge, neg_edge_query_idx, neg_edge_support_labels).squeeze().cpu()]
         neg_test_pred = torch.cat(neg_test_preds, dim=0)
         return pos_test_pred, neg_test_pred
