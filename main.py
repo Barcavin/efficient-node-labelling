@@ -94,6 +94,10 @@ def main():
     start_time = time.time()
     set_random_seeds(234)
 
+
+    if not args.foundation_mode:
+        args.k_shots = 0
+        args.test_k_shots = 0
     if args.test_k_shots is None:
         args.test_k_shots = args.k_shots
 

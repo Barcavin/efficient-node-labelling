@@ -92,6 +92,7 @@ def test_hits(encoder, predictor, data, evaluator,
         h = encoder(data.x, adj_t)
 
     def test_split(split, cache_mode=None):
+        nonlocal h
         pos_test_edge = getattr(data, f"{split}_pos_edge_index")
         neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
