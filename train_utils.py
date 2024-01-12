@@ -96,11 +96,15 @@ def test_hits(encoder, predictor, data, evaluator,
         pos_test_edge = getattr(data, f"{split}_pos_edge_index")
         neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
-        all = []
-        all_labels = []
+        pos_perms = []
+        neg_perms = []
+        pos_test_pred = []
+        neg_test_pred = []
         for perm in tqdm(DataLoader(range(pos_test_edge.size(1)+neg_test_edge.size(1)), batch_size, shuffle=True),desc=f"{split}"):
             pos_perm = perm[perm < pos_test_edge.size(1)]
             neg_perm = perm[perm >= pos_test_edge.size(1)] - pos_test_edge.size(1)
+            pos_perms.append(pos_perm)
+            neg_perms.append(neg_perm)
             edge, edge_query_idx, edge_support_labels  = build_QK_graph(pos_perm, data, k_shots, split, "pos")
             neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(neg_perm, data, k_shots, split, "neg")
             neg_edge_query_idx = neg_edge_query_idx + pos_perm.size(0)
@@ -116,17 +120,21 @@ def test_hits(encoder, predictor, data, evaluator,
                 adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
                 h = encoder(data.x, adj_t)
             out = predictor(h, adj_t, all_edge, all_edge_query_idx, all_edge_support_labels)
-            all += [out.squeeze().cpu()]
-            all_labels += [all_label.cpu()]
+            pos_test_pred += [out.squeeze()[all_label].cpu()]
+            neg_test_pred += [out.squeeze()[~all_label].cpu()]
             # out1 = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
             # out2 = predictor(h, adj_t, neg_edge, neg_edge_query_idx-pos_perm.size(0), neg_edge_support_labels)
             # (out1.view(-1) > out2.view(-1).topk(50)[0][0]).float().mean()
             # (out.view(-1)[all_label] > out.view(-1)[~all_label].topk(50)[0][0]).float().mean()
-        all = torch.cat(all, dim=0)
-        all_labels = torch.cat(all_labels, dim=0)
+        pos_perms = torch.cat(pos_perms, dim=0)
+        neg_perms = torch.cat(neg_perms, dim=0)
 
-        pos_test_pred = all[all_labels]
-        neg_test_pred = all[~all_labels]
+        pos_test_pred = torch.cat(pos_test_pred, dim=0)
+        neg_test_pred = torch.cat(neg_test_pred, dim=0)
+
+        # reorder to the original order
+        pos_test_pred = pos_test_pred[torch.argsort(pos_perms)]
+        neg_test_pred = neg_test_pred[torch.argsort(neg_perms)] 
         return pos_test_pred, neg_test_pred
 
     val_pos_pred, val_neg_pred = test_split('val')
