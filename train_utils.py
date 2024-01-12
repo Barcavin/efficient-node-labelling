@@ -96,30 +96,37 @@ def test_hits(encoder, predictor, data, evaluator,
         pos_test_edge = getattr(data, f"{split}_pos_edge_index")
         neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
-        pos_test_preds = []
-        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)), batch_size),desc=f"{split}:pos"):
-            edge, edge_query_idx, edge_support_labels  = build_QK_graph(perm, data, k_shots, split, "pos")
+        all = []
+        all_labels = []
+        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)+neg_test_edge.size(1)), batch_size, shuffle=True),desc=f"{split}"):
+            pos_perm = perm[perm < pos_test_edge.size(1)]
+            neg_perm = perm[perm >= pos_test_edge.size(1)] - pos_test_edge.size(1)
+            edge, edge_query_idx, edge_support_labels  = build_QK_graph(pos_perm, data, k_shots, split, "pos")
+            neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(neg_perm, data, k_shots, split, "neg")
+            neg_edge_query_idx = neg_edge_query_idx + pos_perm.size(0)
+            all_edge = torch.cat((edge, neg_edge), dim=-1)
+            all_edge_query_idx = torch.cat((edge_query_idx, neg_edge_query_idx), dim=0)
+            all_edge_support_labels = torch.cat((edge_support_labels, neg_edge_support_labels), dim=0)
+            all_label = torch.cat([torch.ones_like(pos_perm,dtype=torch.bool), 
+                                   torch.zeros_like(neg_perm,dtype=torch.bool)])
             if encoding_per_batch:
                 adj_t = data.adj_t
-                undirected_edges = torch.cat((edge, edge.flip(0)), dim=-1)
+                undirected_edges = torch.cat((all_edge, all_edge.flip(0)), dim=-1)
                 target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
                 adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
                 h = encoder(data.x, adj_t)
-            out = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
-            pos_test_preds += [out.squeeze().cpu()]
-        pos_test_pred = torch.cat(pos_test_preds, dim=0)
+            out = predictor(h, adj_t, all_edge, all_edge_query_idx, all_edge_support_labels)
+            all += [out.squeeze().cpu()]
+            all_labels += [all_label.cpu()]
+            # out1 = predictor(h, adj_t, edge, edge_query_idx, edge_support_labels)
+            # out2 = predictor(h, adj_t, neg_edge, neg_edge_query_idx-pos_perm.size(0), neg_edge_support_labels)
+            # (out1.view(-1) > out2.view(-1).topk(50)[0][0]).float().mean()
+            # (out.view(-1)[all_label] > out.view(-1)[~all_label].topk(50)[0][0]).float().mean()
+        all = torch.cat(all, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
 
-        neg_test_preds = []
-        for perm in tqdm(DataLoader(range(neg_test_edge.size(1)), batch_size),desc=f"{split}:neg"):
-            neg_edge, neg_edge_query_idx, neg_edge_support_labels = build_QK_graph(perm, data, k_shots, split, "neg")
-            if encoding_per_batch:
-                adj_t = data.adj_t
-                undirected_edges = torch.cat((neg_edge, neg_edge.flip(0)), dim=-1)
-                target_adj = SparseTensor.from_edge_index(undirected_edges, sparse_sizes=adj_t.sizes())
-                adj_t = spmdiff_(adj_t, target_adj, keep_val=True)
-                h = encoder(data.x, adj_t)
-            neg_test_preds += [predictor(h, adj_t, neg_edge, neg_edge_query_idx, neg_edge_support_labels).squeeze().cpu()]
-        neg_test_pred = torch.cat(neg_test_preds, dim=0)
+        pos_test_pred = all[all_labels]
+        neg_test_pred = all[~all_labels]
         return pos_test_pred, neg_test_pred
 
     val_pos_pred, val_neg_pred = test_split('val')
@@ -351,9 +358,9 @@ def build_QK_graph(perm, data, k_shots, split, label):
         other_edges_to_sample = other_edges_by_dataset[one_dataset_id]
 
         assert edges_to_sample.size(1) >= k_shots, 'Less than k_shots edges to be support edges'
-        random_indices = torch.randint(0, edges_to_sample.size(1), (count[i]*k_shots,))
+        random_indices = torch.randint(0, edges_to_sample.size(1), (k_shots,)).repeat(count[i])
         edges_sampled = edges_to_sample[:,random_indices]
-        random_indices = torch.randint(0, other_edges_to_sample.size(1), (count[i]*k_shots,))
+        random_indices = torch.randint(0, other_edges_to_sample.size(1), (k_shots,)).repeat(count[i])
         other_edges_sampled = other_edges_to_sample[:,random_indices]
 
 

@@ -130,12 +130,12 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
             key = 'edge'
         else:
             key = 'source_node'
-        print("-"*20)
-        print(f"train: {split_edge['train'][key].shape[0]}")
-        print(f"{split_edge['train'][key]}")
-        print(f"valid: {split_edge['valid'][key].shape[0]}")
-        print(f"test: {split_edge['test'][key].shape[0]}")
-        print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
+        # print("-"*20)
+        # print(f"train: {split_edge['train'][key].shape[0]}")
+        # print(f"{split_edge['train'][key]}")
+        # print(f"valid: {split_edge['valid'][key].shape[0]}")
+        # print(f"test: {split_edge['test'][key].shape[0]}")
+        # print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
         data = ToSparseTensor(remove_edge_index=False)(data)
         data.adj_t = data.adj_t.to_symmetric()
         # Use training + validation edges for inference on test set.
@@ -250,12 +250,12 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
         print(f"save split edges to {file_path}")
     data.edge_index = to_undirected(split_edge["train"]["edge"].t())
     data.num_features = data.x.shape[0] if data.x is not None else 0
-    print("-"*20)
-    print(f"train: {split_edge['train']['edge'].shape[0]}")
-    print(f"{split_edge['train']['edge'][:10,:]}")
-    print(f"valid: {split_edge['valid']['edge'].shape[0]}")
-    print(f"test: {split_edge['test']['edge'].shape[0]}")
-    print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
+    # print("-"*20)
+    # print(f"train: {split_edge['train']['edge'].shape[0]}")
+    # print(f"{split_edge['train']['edge'][:10,:]}")
+    # print(f"valid: {split_edge['valid']['edge'].shape[0]}")
+    # print(f"test: {split_edge['test']['edge'].shape[0]}")
+    # print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
     return data, split_edge
 
 
