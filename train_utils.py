@@ -91,7 +91,7 @@ def test_hits(encoder, predictor, data, evaluator,
 
         all = []
         all_labels = []
-        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)+neg_test_edge.size(1)), batch_size, shuffle=True),desc=f"{split}"):
+        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)+neg_test_edge.size(1)), batch_size, shuffle=False),desc=f"{split}"):
             pos_perm = perm[perm < pos_test_edge.size(1)]
             neg_perm = perm[perm >= pos_test_edge.size(1)] - pos_test_edge.size(1)
             edge = pos_test_edge[:,pos_perm]
