@@ -89,18 +89,24 @@ def test_hits(encoder, predictor, data, evaluator,
         pos_test_edge = getattr(data, f"{split}_pos_edge_index")
         neg_test_edge = getattr(data, f"{split}_neg_edge_index")
 
-        pos_test_preds = []
-        for perm in DataLoader(range(pos_test_edge.size(1)), batch_size):
-            edge = pos_test_edge[:,perm]
-            out = predictor(h, adj_t, edge, cache_mode=cache_mode)
-            pos_test_preds += [out.squeeze().cpu()]
-        pos_test_pred = torch.cat(pos_test_preds, dim=0)
+        all = []
+        all_labels = []
+        for perm in tqdm(DataLoader(range(pos_test_edge.size(1)+neg_test_edge.size(1)), batch_size, shuffle=True),desc=f"{split}"):
+            pos_perm = perm[perm < pos_test_edge.size(1)]
+            neg_perm = perm[perm >= pos_test_edge.size(1)] - pos_test_edge.size(1)
+            edge = pos_test_edge[:,pos_perm]
+            neg_edge = neg_test_edge[:,neg_perm]
+            all_edge = torch.cat((edge, neg_edge), dim=-1)
+            all_label = torch.cat([torch.ones_like(pos_perm,dtype=torch.bool), 
+                                   torch.zeros_like(neg_perm,dtype=torch.bool)])
+            out = predictor(h, adj_t, all_edge)
+            all += [out.squeeze().cpu()]
+            all_labels += [all_label.cpu()]
+        all = torch.cat(all, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
 
-        neg_test_preds = []
-        for perm in DataLoader(range(neg_test_edge.size(1)), batch_size):
-            edge = neg_test_edge[:,perm]
-            neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode).squeeze().cpu()]
-        neg_test_pred = torch.cat(neg_test_preds, dim=0)
+        pos_test_pred = all[all_labels]
+        neg_test_pred = all[~all_labels]
         return pos_test_pred, neg_test_pred
 
     val_pos_pred, val_neg_pred = test_split('val')
