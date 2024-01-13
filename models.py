@@ -430,6 +430,7 @@ from torch_geometric.typing import (Adj, OptPairTensor, OptTensor, PairTensor,
                                     Size)
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.utils import softmax
+import math
 
 class AttentionLayer(GATv2Conv):
     def __init__(self, **kwargs):
@@ -439,9 +440,8 @@ class AttentionLayer(GATv2Conv):
     def message(self, x_j: Tensor, x_i: Tensor, edge_attr: OptTensor,
                 index: Tensor, ptr: OptTensor,
                 size_i: Optional[int], edge_index_j) -> Tensor:
-        x = x_i + x_j
-        x = F.leaky_relu(x, self.negative_slope)
-        alpha = (x * self.att).sum(dim=-1)
+        # BERT style attention
+        alpha = (x_i * x_j).sum(dim=-1)/math.sqrt(self.out_channels)
         alpha = softmax(alpha, index, ptr, size_i)
         self._alpha = alpha
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
