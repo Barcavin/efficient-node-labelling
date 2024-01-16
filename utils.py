@@ -2,6 +2,7 @@ import argparse
 import math
 import random
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import torch
@@ -16,8 +17,10 @@ from torch_geometric.utils import (add_self_loops, degree,
                                    from_scipy_sparse_matrix, index_to_mask,
                                    is_undirected, negative_sampling,
                                    to_undirected, train_test_split_edges, coalesce)
-from torch_sparse import SparseTensor                         
-
+from torch_sparse import SparseTensor    
+from snap_dataset import SNAPDataset
+from custom_dataset import SyntheticDataset
+from torch_geometric.data.collate import collate
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
@@ -32,15 +35,29 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         split_edge = dataset.get_edge_split()
         if name == 'ogbl-collab' and year > 0:  # filter out training edges before args.year
             data, split_edge = filter_by_year(data, split_edge, year)
+        if name == 'ogbl-vessel':
+            # normalize x,y,z coordinates  
+            data.x[:, 0] = torch.nn.functional.normalize(data.x[:, 0], dim=0)
+            data.x[:, 1] = torch.nn.functional.normalize(data.x[:, 1], dim=0)
+            data.x[:, 2] = torch.nn.functional.normalize(data.x[:, 2], dim=0)
         if 'edge_weight' in data:
             data.edge_weight = data.edge_weight.view(-1).to(torch.float)
+            # TEMP FIX: ogbl-collab has directed edges. adj_t.to_symmetric will
+            # double the edge weight. temporary fix like this to avoid too dense graph.
+            if name == "ogbl-collab":
+                data.edge_weight = data.edge_weight/2
+        if 'edge' in split_edge['train']:
+            key = 'edge'
+        else:
+            key = 'source_node'
         print("-"*20)
-        print(f"train: {split_edge['train']['edge'].shape[0]}")
-        print(f"{split_edge['train']['edge'][:10,:]}")
-        print(f"valid: {split_edge['valid']['edge'].shape[0]}")
-        print(f"test: {split_edge['test']['edge'].shape[0]}")
+        print(f"train: {split_edge['train'][key].shape[0]}")
+        print(f"{split_edge['train'][key]}")
+        print(f"valid: {split_edge['valid'][key].shape[0]}")
+        print(f"test: {split_edge['test'][key].shape[0]}")
         print(f"max_degree:{degree(data.edge_index[0], data.num_nodes).max()}")
         data = ToSparseTensor(remove_edge_index=False)(data)
+        data.adj_t = data.adj_t.to_symmetric()
         # Use training + validation edges for inference on test set.
         if use_valedges_as_input:
             val_edge_index = split_edge['valid']['edge'].t()
@@ -53,23 +70,36 @@ def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
         # make node feature as float
         if data.x is not None:
             data.x = data.x.to(torch.float)
+        if name != 'ogbl-ddi':
+            del data.edge_index
         return data, split_edge
 
     pyg_dataset_dict = {
-        'cora': (datasets.Planetoid, 'Cora'),
-        'citeseer': (datasets.Planetoid, 'Citeseer'),
-        'pubmed': (datasets.Planetoid, 'Pubmed'),
-        'cs': (datasets.Coauthor, 'CS'),
-        'physics': (datasets.Coauthor, 'physics'),
-        'computers': (datasets.Amazon, 'Computers'),
-        'photos': (datasets.Amazon, 'Photo')
+        'Cora': (datasets.Planetoid, {'name':'Cora'}),
+        'Citeseer': (datasets.Planetoid, {'name':'Citeseer'}),
+        'Pubmed': (datasets.Planetoid, {'name':'Pubmed'}),
+        'CS': (datasets.Coauthor, {'name':'CS'}),
+        'Physics': (datasets.Coauthor, {'name':'physics'}),
+        'Computers': (datasets.Amazon, {'name':'Computers'}),
+        'Photo': (datasets.Amazon, {'name':'Photo'}),
+        'PolBlogs': (datasets.PolBlogs, {}),
+        'musae-twitch':(SNAPDataset, {'name':'musae-twitch'}),
+        'musae-github':(SNAPDataset, {'name':'musae-github'}),
+        'musae-facebook':(SNAPDataset, {'name':'musae-facebook'}),
+        'syn-TRIANGULAR':(SyntheticDataset, {'name':'TRIANGULAR'}),
+        'syn-GRID':(SyntheticDataset, {'name':'GRID'}),
     }
-
     # assert name in pyg_dataset_dict, "Dataset must be in {}".format(list(pyg_dataset_dict.keys()))
 
     if name in pyg_dataset_dict:
-        dataset_class, name = pyg_dataset_dict[name]
-        data = dataset_class(root, name=name, transform=ToUndirected())[0]
+        dataset_class, kwargs = pyg_dataset_dict[name]
+        dataset = dataset_class(root=root, transform=ToUndirected(), **kwargs)
+        data, _, _ = collate(
+                dataset[0].__class__,
+                data_list=list(dataset),
+                increment=True,
+                add_batch=False,
+            )
     else:
         data = load_unsplitted_data(root, name)
     return data, None
@@ -152,7 +182,7 @@ def get_data_split(root, name: str, val_ratio, test_ratio, run=0):
 def data_summary(name: str, data: Data, header=False, latex=False):
     num_nodes = data.num_nodes
     num_edges = data.num_edges
-    n_degree = degree(data.edge_index[0], num_nodes, dtype=torch.float)
+    n_degree = data.adj_t.sum(dim=1).to(torch.float)
     avg_degree = n_degree.mean().item()
     degree_std = n_degree.std().item()
     max_degree = n_degree.max().long().item()
@@ -246,4 +276,7 @@ def filter_by_year(data, split_edge, year):
     data.edge_index = new_edge_index
     data.edge_weight = new_edge_weight.unsqueeze(-1)
     return data, split_edge
+
+def get_git_revision_short_hash() -> str:
+    return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     
