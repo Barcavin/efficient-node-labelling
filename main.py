@@ -99,8 +99,7 @@ def main():
     data, split_edge = get_dataset(args.dataset_dir, args.dataset, args.use_valedges_as_input, args.year)
     if args.dataset == "ogbl-citation2":
         args.metric = "MRR"
-    if data.x is None:
-        args.use_feature = False
+    args.use_feature = True
 
     if args.print_summary:
         data_summary(args.dataset, data, header='header' in args.print_summary, latex='latex' in args.print_summary);exit(0)
@@ -142,6 +141,7 @@ def main():
                     exit(0)
                 else:
                     continue
+        data.x = torch.ones(data.num_nodes, 32)
         if args.adj2:
             print("Computing 2-hop adj. This may take a while.")
             start_time = time.time()
