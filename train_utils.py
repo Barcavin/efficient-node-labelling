@@ -53,7 +53,7 @@ def train_hits(encoder, predictor, data, split_edge, optimizer, batch_size,
                                         dtype=torch.long, device=device)
     else:
         neg_edge_epoch = negative_sampling(data.edge_index, num_nodes=data.adj_t.size(0),
-                                           num_neg_samples=(data.adj_t.nnz()//2)*num_neg)
+                                           num_neg_samples=pos_train_edge.size(0))
     # for perm in (pbar := tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,
     #                        shuffle=True)) ):
     for perm in tqdm(DataLoader(range(pos_train_edge.size(0)), batch_size,

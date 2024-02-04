@@ -24,6 +24,13 @@ MPLP_dict={
     "MPLP+precompute": "precompute",
 }
 
+def load_model(encoder, predictor, load_model_path, state_dict=None):
+    if load_model_path is not None:
+        state_dict = torch.load(load_model_path)
+    encoder.load_state_dict(state_dict['encoder'])
+    predictor.load_state_dict(state_dict['predictor'])
+    print(f"load model from {load_model_path}")
+
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
     # dataset setting
@@ -77,6 +84,8 @@ def main():
     parser.add_argument('--log_dir', type=str, default='./logs')
     parser.add_argument('--data_split_only', type=str2bool, default='False')
     parser.add_argument('--print_summary', type=str, default='')
+    parser.add_argument('--load_model', type=str, default=None)
+    parser.add_argument('--train_samples', type=int, default=None, help='number of training samples per pretrain dataset')
 
     args = parser.parse_args()
     # start time
@@ -117,6 +126,7 @@ def main():
     for run in range(args.runs):
         if not args.dataset.startswith('ogbl-'):
             data, split_edge = get_data_split(args.dataset_dir, args.dataset, args.val_ratio, args.test_ratio, run=run)
+            split_edge['train']['edge'] = split_edge['train']['edge'][:args.train_samples]
             data = T.ToSparseTensor(remove_edge_index=False)(data)
             # Use training + validation edges for inference on test set.
             if args.use_valedges_as_input:
@@ -194,6 +204,8 @@ def main():
 
         cnt_wait = 0
         best_val = 0.0
+        # load best model
+        load_model(encoder, predictor, args.load_model, None)
 
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
