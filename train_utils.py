@@ -171,8 +171,8 @@ def train_mrr(encoder, predictor, data, split_edge, optimizer, batch_size,
     predictor.train()
     device = data.adj_t.device()
     criterion = BCEWithLogitsLoss(reduction='mean')
-    source_edge = split_edge['train']['source_node'].to(device)[:400]
-    target_edge = split_edge['train']['target_node'].to(device)[:400]
+    source_edge = split_edge['train']['source_node'].to(device)
+    target_edge = split_edge['train']['target_node'].to(device)
     adjmask = torch.ones_like(source_edge, dtype=torch.bool)
     
     optimizer.zero_grad()
@@ -195,8 +195,8 @@ def train_mrr(encoder, predictor, data, split_edge, optimizer, batch_size,
         dst_neg = torch.randint(0, data.num_nodes, perm.size()*num_neg,
                                 dtype=torch.long, device=device)
 
-        edge = torch.stack((source_edge[perm], target_edge[perm]), dim=0)
-        neg_edge = torch.stack((source_edge[perm].repeat(num_neg), dst_neg), dim=0)
+        edge = torch.stack((source_edge, target_edge), dim=0)[:,:400]
+        neg_edge = torch.stack((source_edge[perm].repeat(num_neg), dst_neg), dim=0)[:,:400]
         train_edges = torch.cat((edge, neg_edge), dim=-1)
         train_label = torch.cat((torch.ones(edge.size()[1]), torch.zeros(neg_edge.size()[1])), dim=0).to(device)
         out = predictor(h, adj_t, train_edges, adj2 = adj2).squeeze()
