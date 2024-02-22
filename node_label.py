@@ -23,7 +23,7 @@ class NodeLabel(torch.nn.Module):
     def __init__(self, dim: int=1024, signature_sampling="torchhd", prop_type="prop_only",
                  minimum_degree_onehot: int=-1):
         super().__init__()
-        self.dim = dim
+        self.dim = 512
         self.signature_sampling = signature_sampling
         self.prop_type = prop_type
         self.cached_two_hop_adj = None

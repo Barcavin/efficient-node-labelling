@@ -171,8 +171,8 @@ def train_mrr(encoder, predictor, data, split_edge, optimizer, batch_size,
     predictor.train()
     device = data.adj_t.device()
     criterion = BCEWithLogitsLoss(reduction='mean')
-    source_edge = split_edge['train']['source_node'].to(device)
-    target_edge = split_edge['train']['target_node'].to(device)
+    source_edge = split_edge['train']['source_node'].to(device)[:400]
+    target_edge = split_edge['train']['target_node'].to(device)[:400]
     adjmask = torch.ones_like(source_edge, dtype=torch.bool)
     
     optimizer.zero_grad()
@@ -231,7 +231,7 @@ def test_mrr(encoder, predictor, data, split_edge, evaluator,
         target_neg = split_edge[split]['target_node_neg'].to(device)
 
         pos_preds = []
-        for perm in DataLoader(range(source.size(0)), batch_size):
+        for perm in tqdm(DataLoader(range(source.size(0)), batch_size)):
             src, dst = source[perm], target[perm]
             pos_preds += [predictor(h, adj_t, torch.stack((src, dst)), cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
         pos_pred = torch.cat(pos_preds, dim=0)
@@ -239,7 +239,7 @@ def test_mrr(encoder, predictor, data, split_edge, evaluator,
         neg_preds = []
         source = source.view(-1, 1).repeat(1, 1000).view(-1)
         target_neg = target_neg.view(-1)
-        for perm in DataLoader(range(source.size(0)), batch_size):
+        for perm in tqdm(DataLoader(range(source.size(0)), batch_size)):
             src, dst_neg = source[perm], target_neg[perm]
             neg_preds += [predictor(h, adj_t, torch.stack((src, dst_neg)), cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
         neg_pred = torch.cat(neg_preds, dim=0).view(-1, 1000)
