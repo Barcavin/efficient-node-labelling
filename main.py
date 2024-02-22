@@ -24,6 +24,18 @@ MPLP_dict={
     "MPLP+precompute": "precompute",
 }
 
+def update_args(args, load_model_path):
+    state_dict = torch.load(load_model_path)
+    args.__dict__.update(state_dict['args'])
+    return args
+
+def load_model(encoder, predictor, load_model_path, state_dict=None):
+    if load_model_path is not None:
+        state_dict = torch.load(load_model_path)
+    encoder.load_state_dict(state_dict['encoder'])
+    predictor.load_state_dict(state_dict['predictor'])
+    print(f"load model from {load_model_path}")
+
 def main():
     parser = argparse.ArgumentParser(description='OGBL-DDI (GNN)')
     # dataset setting
@@ -78,6 +90,8 @@ def main():
     parser.add_argument('--data_split_only', type=str2bool, default='False')
     parser.add_argument('--print_summary', type=str, default='')
 
+    parser.add_argument('--load_model', type=str, default=None, help='the directory to load model')
+
     args = parser.parse_args()
     # start time
     start_time = time.time()
@@ -114,6 +128,15 @@ def main():
     train, test, evaluator, loggers = get_train_test(args)
 
     val_max = 0.0
+
+    # override args when loading model
+    if args.load_model:
+        train_data_num_features = 0
+        args = update_args(args, args.load_model)
+        args_str = "###### Override args ######\n" + args.__repr__()
+        print(args_str)
+        with open(final_log_path, 'a') as f:
+            print(args_str, file=f)
     for run in range(args.runs):
         if not args.dataset.startswith('ogbl-'):
             data, split_edge = get_data_split(args.dataset_dir, args.dataset, args.val_ratio, args.test_ratio, run=run)
@@ -152,15 +175,15 @@ def main():
         else:
             emb = None
         if 'gcn' in args.encoder:
-            encoder = GCN(data.num_features, args.hidden_channels,
+            encoder = GCN(train_data_num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.feat_dropout, args.xdp, args.use_feature, args.jk, args.encoder, emb).to(device)
         elif args.encoder == 'sage':
-            encoder = SAGE(data.num_features, args.hidden_channels,
+            encoder = SAGE(train_data_num_features, args.hidden_channels,
                         args.hidden_channels, args.num_layers,
                         args.feat_dropout, args.xdp, args.use_feature, args.jk, emb).to(device)
         elif args.encoder == 'mlp':
-            encoder = MLP(args.num_layers, data.num_features, 
+            encoder = MLP(args.num_layers, train_data_num_features, 
                           args.hidden_channels, args.hidden_channels, args.dropout).to(device)
 
         predictor_in_dim = args.hidden_channels * int(args.use_feature or args.use_embedding)
@@ -194,7 +217,10 @@ def main():
 
         cnt_wait = 0
         best_val = 0.0
-
+        # load best model
+        load_model(encoder, predictor, args.load_model, None)
+        encoder.to(device)
+        predictor.to(device)
         for epoch in range(1, 1 + args.epochs):
             loss = train(encoder, predictor, data, split_edge,
                          optimizer, args.batch_size, args.mask_target, args.dataset, 
