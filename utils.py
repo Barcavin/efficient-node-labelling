@@ -7,7 +7,7 @@ import subprocess
 import numpy as np
 import torch
 import torch.nn.functional as F
-from ogb.linkproppred import PygLinkPropPredDataset
+from ogb.linkproppred import PygLinkPropPredDataset, Evaluator
 from torch_geometric import datasets
 from torch_geometric.data import Data
 from torch_geometric.transforms import (BaseTransform, Compose, ToSparseTensor,
@@ -21,6 +21,8 @@ from torch_sparse import SparseTensor
 from snap_dataset import SNAPDataset
 from custom_dataset import SyntheticDataset
 from torch_geometric.data.collate import collate
+
+from evalutors import evaluate_mrr
 
 def get_dataset(root, name: str, use_valedges_as_input=False, year=-1):
     if name.startswith('ogbl-'):
@@ -115,6 +117,87 @@ def load_unsplitted_data(root,name):
     if is_undirected(data.edge_index) == False: #in case the dataset is directed
         data.edge_index = to_undirected(data.edge_index)
     return data
+
+def HeaRT(name, split_edge):
+    ROOT_HeaRT = "/afs/crc.nd.edu/user/k/kdong2/repo/HeaRT/dataset"
+    filename="samples.npy"
+    if name == 'ogbl-collab':
+        pos_train_edge = split_edge['train']['edge']
+
+        pos_valid_edge = split_edge['valid']['edge']
+        
+        pos_test_edge = split_edge['test']['edge']
+    
+        
+        with open(f'{ROOT_HeaRT}/{name}/heart_valid_{filename}', "rb") as f:
+            neg_valid_edge = np.load(f)
+            neg_valid_edge = torch.from_numpy(neg_valid_edge)
+        with open(f'{ROOT_HeaRT}/{name}/heart_test_{filename}', "rb") as f:
+            neg_test_edge = np.load(f)
+            neg_test_edge = torch.from_numpy(neg_test_edge)
+        split_edge['valid']['edge_neg'] = neg_valid_edge
+        split_edge['test']['edge_neg'] = neg_test_edge
+    
+    elif name == 'ogbl-ppa':
+        pos_train_edge = split_edge['train']['edge']
+        
+        subset_dir = f'{ROOT_HeaRT}/{name}'
+        val_pos_ix = torch.load(Path(subset_dir)/ "valid_samples_index.pt")
+        test_pos_ix = torch.load(Path(subset_dir)/ "test_samples_index.pt")
+
+        pos_valid_edge = split_edge['valid']['edge'][val_pos_ix, :]
+        pos_test_edge = split_edge['test']['edge'][test_pos_ix, :]
+
+       
+        with open(f'{ROOT_HeaRT}/{name}/heart_valid_{filename}', "rb") as f:
+            neg_valid_edge = np.load(f)
+            neg_valid_edge = torch.from_numpy(neg_valid_edge)
+        with open(f'{ROOT_HeaRT}/{name}/heart_test_{filename}', "rb") as f:
+            neg_test_edge = np.load(f)
+            neg_test_edge = torch.from_numpy(neg_test_edge)
+        split_edge['valid']['edge'] = pos_valid_edge
+        split_edge['test']['edge'] = pos_test_edge
+        split_edge['valid']['edge_neg'] = neg_valid_edge
+        split_edge['test']['edge_neg'] = neg_test_edge
+    else:
+        source_edge, target_edge = split_edge['train']['source_node'], split_edge['train']['target_node']
+        pos_train_edge = torch.cat([source_edge.unsqueeze(1), target_edge.unsqueeze(1)], dim=-1)
+
+        source, target = split_edge['valid']['source_node'],  split_edge['valid']['target_node']
+        pos_valid_edge = torch.cat([source.unsqueeze(1), target.unsqueeze(1)], dim=-1)
+        # neg_valid_edge = split_edge['valid']['target_node_neg'] 
+
+        source, target = split_edge['test']['source_node'],  split_edge['test']['target_node']
+        pos_test_edge = torch.cat([source.unsqueeze(1), target.unsqueeze(1)], dim=-1)
+        # neg_test_edge = split_edge['test']['target_node_neg']
+
+        
+        with open(f'{ROOT_HeaRT}/{name}/heart_valid_{filename}', "rb") as f:
+            neg_valid_edge = np.load(f)
+            neg_valid_edge = torch.from_numpy(neg_valid_edge)
+        with open(f'{ROOT_HeaRT}/{name}/heart_test_{filename}', "rb") as f:
+            neg_test_edge = np.load(f)
+            neg_test_edge = torch.from_numpy(neg_test_edge)
+        split_edge['valid']['edge'] = pos_valid_edge
+        split_edge['test']['edge'] = pos_test_edge
+        split_edge['valid']['edge_neg'] = neg_valid_edge
+        split_edge['test']['edge_neg'] = neg_test_edge
+    return split_edge
+
+evaluator_mrr = Evaluator(name="ogbl-citation2")
+def get_metric_score(pos_val_pred, neg_val_pred, pos_test_pred, neg_test_pred):
+    k_list = [20, 50, 100]
+    result = {}
+
+    result_mrr_val = evaluate_mrr( evaluator_mrr, pos_val_pred, neg_val_pred )
+    result_mrr_test = evaluate_mrr( evaluator_mrr, pos_test_pred, neg_test_pred )
+    
+   
+    result['MRR'] = (result_mrr_val['MRR'], result_mrr_test['MRR'])
+    for K in k_list:
+        result[f'Hits@{K}'] = (result_mrr_val[f'mrr_hit{K}'], result_mrr_test[f'mrr_hit{K}'])
+
+    return result
 
 def set_random_seeds(random_seed=0):
     r"""Sets the seed for generating random numbers."""

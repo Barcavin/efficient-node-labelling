@@ -15,7 +15,7 @@ from train_utils import get_train_test
 from models import GCN, MLP, SAGE, LinkPredictor, MPLP
 from node_label import get_two_hop_adj
 from utils import ( get_dataset, data_summary, get_git_revision_short_hash,
-                   set_random_seeds, str2bool, get_data_split, initial_embedding)
+                   set_random_seeds, str2bool, get_data_split, initial_embedding, HeaRT)
 
 MPLP_dict={
     "MPLP": "combine",
@@ -88,8 +88,8 @@ def main():
     # device = torch.device('cpu')
 
     data, split_edge = get_dataset(args.dataset_dir, args.dataset, args.use_valedges_as_input, args.year)
-    if args.dataset == "ogbl-citation2":
-        args.metric = "MRR"
+    split_edge = HeaRT(args.dataset, split_edge)
+    args.metric = "MRR"
     if data.x is None:
         args.use_feature = False
 

@@ -12,24 +12,28 @@ from tqdm import tqdm
 from node_label import spmdiff_
 from logger import Logger
 
+from utils import get_metric_score
 
 
 def get_train_test(args):
     if args.dataset == "ogbl-citation2":
         evaluator = Evaluator(name='ogbl-citation2')
         loggers = {
-            'MRR': Logger(args.runs, args),
-            # 'AUC': Logger(args.runs, args),
-        }
-        return train_mrr, test_mrr, evaluator, loggers
-    else:
-        evaluator = Evaluator(name='ogbl-ddi')
-        loggers = {
-            'Hits@10': Logger(args.runs, args),
             'Hits@20': Logger(args.runs, args),
             'Hits@50': Logger(args.runs, args),
             'Hits@100': Logger(args.runs, args),
-            'AUC': Logger(args.runs, args),
+            'MRR': Logger(args.runs, args),
+            # 'AUC': Logger(args.runs, args),
+        }
+        return train_mrr, test_hits, evaluator, loggers
+    else:
+        evaluator = Evaluator(name='ogbl-ddi')
+        loggers = {
+            'Hits@20': Logger(args.runs, args),
+            'Hits@50': Logger(args.runs, args),
+            'Hits@100': Logger(args.runs, args),
+            'MRR': Logger(args.runs, args),
+            # 'AUC': Logger(args.runs, args),
         }
         return train_hits, test_hits, evaluator, loggers
 
@@ -102,6 +106,7 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
     def test_split(split, cache_mode=None):
         pos_test_edge = split_edge[split]['edge'].to(device)
         neg_test_edge = split_edge[split]['edge_neg'].to(device)
+        neg_num = neg_test_edge.size(1)
 
         pos_test_preds = []
         for perm in DataLoader(range(pos_test_edge.size(0)), batch_size):
@@ -111,10 +116,12 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
         pos_test_pred = torch.cat(pos_test_preds, dim=0)
 
         neg_test_preds = []
-        for perm in DataLoader(range(neg_test_edge.size(0)), batch_size):
-            edge = neg_test_edge[perm].t()
-            neg_test_preds += [predictor(h, adj_t, edge, cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
+        for perm in DataLoader(range(neg_test_edge.size(0)), batch_size//neg_num):
+            neg_edges = torch.permute(neg_test_edge[perm], (2, 0, 1))
+            neg_edges = neg_edges.view(2,-1)
+            neg_test_preds += [predictor(h, adj_t, neg_edges, cache_mode=cache_mode, adj2 = adj2).squeeze().cpu()]
         neg_test_pred = torch.cat(neg_test_preds, dim=0)
+        neg_test_pred = neg_test_pred.view(-1, neg_num)
         return pos_test_pred, neg_test_pred
 
     pos_valid_pred, neg_valid_pred = test_split('valid')
@@ -138,27 +145,7 @@ def test_hits(encoder, predictor, data, split_edge, evaluator,
         # delete cache
         predictor(h, adj_t, None, cache_mode='delete')
     
-    results = {}
-    for K in [10, 20, 50, 100]:
-        evaluator.K = K
-        valid_hits = evaluator.eval({
-            'y_pred_pos': pos_valid_pred,
-            'y_pred_neg': neg_valid_pred,
-        })[f'hits@{K}']
-        test_hits = evaluator.eval({
-            'y_pred_pos': pos_test_pred,
-            'y_pred_neg': neg_test_pred,
-        })[f'hits@{K}']
-
-        results[f'Hits@{K}'] = (valid_hits, test_hits)
-
-    valid_result = torch.cat((torch.ones(pos_valid_pred.size()), torch.zeros(neg_valid_pred.size())), dim=0)
-    valid_pred = torch.cat((pos_valid_pred, neg_valid_pred), dim=0)
-
-    test_result = torch.cat((torch.ones(pos_test_pred.size()), torch.zeros(neg_test_pred.size())), dim=0)
-    test_pred = torch.cat((pos_test_pred, neg_test_pred), dim=0)
-
-    results['AUC'] = (roc_auc_score(valid_result.cpu().numpy(),valid_pred.cpu().numpy()),roc_auc_score(test_result.cpu().numpy(),test_pred.cpu().numpy()))
+    results = get_metric_score(pos_valid_pred, neg_valid_pred, pos_test_pred, neg_test_pred)
 
     return results
 
