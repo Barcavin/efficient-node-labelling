@@ -131,7 +131,9 @@ def main():
 
     # override args when loading model
     if args.load_model:
-        train_data_num_features = 0
+        data.x = torch.ones(data.num_nodes, 32)
+        args.use_feature = True
+        train_data_num_features = 32
         args = update_args(args, args.load_model)
         args_str = "###### Override args ######\n" + args.__repr__()
         print(args_str)
@@ -222,9 +224,10 @@ def main():
         encoder.to(device)
         predictor.to(device)
         for epoch in range(1, 1 + args.epochs):
-            loss = train(encoder, predictor, data, split_edge,
-                         optimizer, args.batch_size, args.mask_target, args.dataset, 
-                         num_neg=args.num_neg, adj2=adj2)
+            # loss = train(encoder, predictor, data, split_edge,
+            #              optimizer, args.batch_size, args.mask_target, args.dataset, 
+            #              num_neg=args.num_neg, adj2=adj2)
+            loss=0
 
             results = test(encoder, predictor, data, split_edge,
                             evaluator, args.test_batch_size, args.use_valedges_as_input, args.fast_inference, adj2=adj2)
