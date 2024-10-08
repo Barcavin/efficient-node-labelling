@@ -1,12 +1,12 @@
 # Code for Message Passing Link Predictor (MPLP)
-Paper: [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976)
+Neurips 2024 Paper: [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976)
 
 Authors: Kaiwen Dong, Zhichun Guo, Nitesh V. Chawla
 
 ![Framework of MPLP](misc/diagram-framework.png)
 
 ## Introduction
-This repository contains the code for the paper [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976). MPLP is a simple yet effective message passing framework for link prediction. It is based on the observation that the common neighbor count can be estimated by performing message passing on the random vectors. MPLP is able to achieve state-of-the-art performance on a wide range of datasets on various domains, including social networks, biological networks, and citation networks. Moreover, MPLP is able to achieve new state-of-the-art performance on the [OGB leaderboard](https://ogb.stanford.edu/docs/leader_linkprop/) as of 2023-12-28:
+This repository contains the code for the paper [Pure Message Passing Can Estimate Common Neighbor for Link Prediction](https://arxiv.org/abs/2309.00976). MPLP is a simple yet effective message passing framework for link prediction. It is based on the observation that the common neighbor count can be estimated by performing message passing on the random vectors. MPLP is able to achieve state-of-the-art performance on a wide range of datasets on various domains, including social networks, biological networks, and citation networks. Moreover, MPLP is able to achieve new state-of-the-art performance on the [OGB leaderboard](https://ogb.stanford.edu/docs/leader_linkprop/) as of 2024-10-08:
 
 |              | PPA        | Citation2   |
 |--------------|------------|-------------|
